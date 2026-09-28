@@ -115,7 +115,7 @@ SCDialogue.Intents = {
     { id = 'ask_movie', patterns = { '=film', 'filmler', 'dizi', 'sinema', 'ne izliyorsun', 'en sevdigin film', 'film izler', 'hangi film', 'ne izlersin' } },
     { id = 'ask_car', patterns = { 'araban', 'arabanin', 'araba kullan', 'ehliyet', 'ne suruyorsun', 'araban var mi', 'aracin', 'arabayla mi' } },
     { id = 'ask_smoke', patterns = { 'sigara', 'cakmak', 'atesin var mi', 'sigaran var', 'bir dal', 'sigara icer' } },
-    { id = 'ask_money', weight = 1.2, patterns = { 'borc', 'para ver', 'paran var mi', 'bana para', 'bozuk para', 'harclik', 'biraz para', 'cuzdan', 'para lazim', '=paran', 'paranin hepsini', 'paralari ver', 'ne kadar paran' } },
+    { id = 'ask_money', weight = 1.2, patterns = { 'borc', 'para ver', 'paran var mi', 'bana para', 'bozuk para', 'harclik', 'biraz para', 'cuzdan', 'para lazim', '=paran', '=parani', 'parani ver', 'paranin hepsini', 'paralari ver', 'paralarini ver', 'ne kadar paran', 'neyin varsa ver' } },
     { id = 'ask_help', patterns = { 'yardim eder misin', 'yardimci olur musun', 'yardimina ihtiyacim', 'bir iyilik', 'yardim et', 'bana yardim' } },
     { id = 'offer_help', weight = 1.1, patterns = { 'yardim edebilir miyim', 'yardim lazim mi', 'bir sey lazim mi', 'yardima ihtiyacin', 'yardimci olayim', 'yardim edeyim', 'bir sey ister misin' } },
     { id = 'offer_drink', weight = 1.2, patterns = { 'ismarlayayim', 'ismarlarim', 'sana bir sey alayim', 'kahve ister misin', 'bir sey icer misin', 'cay ister misin', 'davet ediyorum', 'hesap benden', 'benden olsun' } },

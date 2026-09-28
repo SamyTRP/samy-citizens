@@ -704,6 +704,13 @@ const Admin = {
       const ok = await this.call('validateModel', f.model.value.trim(), true);
       modelCheck.textContent = ok === true ? '✔' : '✖';
     };
+    const vModelCheck = el('span', { class: 'muted' });
+    const checkVehicle = async () => {
+      const m = f.vModel.value.trim();
+      if (!m) { vModelCheck.textContent = ''; return; }
+      const ok = await this.call('validateVehicle', m, true);
+      vModelCheck.textContent = ok === true ? '✔' : '✖';
+    };
 
     form.append(
       field(t('f_id'), f.id), field(t('f_firstname'), f.firstname), field(t('f_lastname'), f.lastname), field(t('f_age'), f.age),
@@ -730,7 +737,7 @@ const Admin = {
     root.appendChild(form2);
 
     const form3 = el('div', { class: 'form' });
-    form3.append(field(t('f_vmodel'), f.vModel), field(t('f_vplate'), f.vPlate),
+    form3.append(field(t('f_vmodel'), el('div', { class: 'inline' }, f.vModel, el('button', { class: 'small', text: '?', onclick: checkVehicle }), vModelCheck)), field(t('f_vplate'), f.vPlate),
       field(t('f_vcolor'), el('div', { class: 'inline' }, f.vC1, f.vC2)), field(t('f_vtype'), f.vType));
     root.appendChild(el('div', { class: 'section-title', text: t('sec_vehicle') }));
     root.appendChild(form3);

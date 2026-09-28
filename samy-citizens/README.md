@@ -10,6 +10,7 @@ Kendi hayatı olan, konuşabilen, hatırlayan ve arkadaş olunabilen kalıcı "s
 - Sakin oyuncuyu **karakter bazında** hatırlar (citizenid): adını, mesleğini, sevdiği şeyleri, son konuşmada neden bahsettiğinizi, ona silah doğrulttuğunu…
 - Yabancı → Tanıdık → Arkadaş → Yakın arkadaş (ve Soğuk / Düşman). Numara verir, gksphone üzerinden SMS'leşir, buluşma ayarlar ve **gerçekten gelir**.
 - Silah doğrultulunca eller yukarı, kaçar, polisi arar; olayı iş arkadaşlarına/komşularına anlatır, itibar mahallede yayılır.
+- Silahlı oyuncu bir sakini **rehin alabilir** (kalkan / önünden yürütme / diz çöktürme / araca bindirme). Rehine yalvarır, fırsat bulursa kaçar, tanıklar polisi arar; sakin seni günlerce tanır.
 
 ---
 
@@ -153,6 +154,7 @@ samy-citizens/
   server/phone.lua              -- gksphone / yerleşik SMS
   server/social.lua             -- NPC–NPC ilişkileri, dedikodu
   server/world.lua              -- silah/patlama/ölüm/hırsızlık, dispatch
+  server/hostage.lua            -- rehine alma: doğrulama, modlar, kaçma, tanık/polis, anı etkileri
   server/admin.lua              -- yönetim paneli API'si, rastgele sakin üretici
   server/main.lua               -- başlatma, döngüler, export'lar
   client/main.lua               -- ox_target, snap/saat callback'leri, hediye
@@ -160,6 +162,7 @@ samy-citizens/
   client/debug.lua              -- /citizensdebug
   client/conversation.lua       -- NUI paneli + 3D baloncuklar
   client/world.lua              -- nişan/ateş/çarpma algılama
+  client/hostage.lua            -- rehin alan oyuncu: tuşlar, kalkan animasyonu, ipucu metni
   client/phone.lua              -- yerleşik mini mesajlaşma
   client/admin.lua              -- panel köprüsü, ışınlanma, harita işaretleri
   web/index.html, style.css, app.js  -- konuşma, baloncuk, telefon, admin NUI
@@ -193,6 +196,16 @@ samy-citizens/
 5. **Tehdit:** Bir sakine silah doğrult → eller yukarı → kaçar → polis ihbarı (ps-dispatch/cd_dispatch). Sonraki görüşmede hesap sorar. Olay iş arkadaşlarına/komşularına yayılır: Selin'e silah doğrult → Elif (iş arkadaşı) seni "duymuş" olur ve ona sorarsan anlatır.
 6. **NPC–NPC:** Aynı mekândaki sakinler zaman zaman sohbet eder; bir sakine başka bir sakini sorabilirsin (`Elif'i tanır mısın?`).
 
+### Rehine alma (`Config.Hostage`)
+1. Elinde silah varken bir sakine 2 m'den nişan al → ekranda `[E] Rehin al` ipucu çıkar; `E`'ye bas (ya da ox_target `Rehin al`). Araçtaki bir sakin ya da araçtayken rehin alınamaz. `AllowMelee = false` ise sadece ateşli silahla.
+2. Rehin tutarken: `G` bırak · `H` kalkan ↔ yürüt · `J` diz çöktür · `K` yakındaki araca bindir / indir (boş yolcu koltuğu, önce arka). Tuşlar oyuncu tarafından GTA Ayarlar → Tuş Atamaları → FiveM'den değiştirilebilir.
+   - **Kalkan (`hold`):** sakin önünde, silah başında; koşamaz, zıplayamaz, ateş edemezsin; rehine kaçamaz.
+   - **Yürüt (`escort`):** eller yukarı önünden yürür. **Diz çöktür (`kneel`)**, **araç (`vehicle`)**: aynı araçtayken kaçamaz.
+3. Kaçma: kalkan modu ve aynı araç dışında her `EscapeCheckSec` (10 sn) bir deneme — silah elindeyken %4, silahı indirdiysen %35; sen araçtayken o dışarıdaysa en az %50; aradaki mesafe `LeashDistance`'ın (25 m) yarısını geçerse +%15, tamamını geçerse hemen kaçar. `MaxMinutes` (30 gerçek dk) dolunca da kaçar. Sen ölürsen ya da oyundan çıkarsan rehine kurtulur.
+4. Rehineyle konuşabilirsin (sadece rehin alan): korkuyla cevap verir; `Sakin ol`, `Paranı ver`, `Kimseye söylemeyeceksin`, `Adın ne?`, `Seni bırakacağım` gibi öneri düğmeleri çıkar. Bu konuşma "görüşme" sayılmaz. Rehineye vurursan kaçamaz ama unutmaz; SMS'lere serbest kalana kadar cevap vermez.
+5. 30 m içinde olayı gören sakinler kaçar, biri 20 sn sonra rehinenin yerini polise bildirir. Bırakılan/kaçan rehine kaçar, 8 sn sonra polisi arar, sonra saatlerce (`ShakenMinutes`) evine kapanır.
+6. Sonrası: "rehin alındım" anısı (ilişki büyük ölçüde düşer, genelde **Düşman**), olay mahallede yayılır. `RecognizeDays` (7 gerçek gün) boyunca seni yakınında görünce bağırır, kaçar ve polisi arar. `/citizensadmin → Sakinler` listesinde rehine `[hostage]` etiketiyle görünür.
+
 ## 7. Yönetim paneli (`/citizensadmin`)
 
 - **Sakinler:** canlı liste, ışınlan, yanına çağır, harita işaretleri, yeni sakin, **Rastgele üret** (isim/kişilik/meslek/geçmiş/hazır cevap havuzlarından taslak → düzenle → kaydet).
@@ -217,6 +230,7 @@ exports['samy-citizens']:GetResident(id)                 -- sakin özeti
 exports['samy-citizens']:GetResidents()
 exports['samy-citizens']:GetResidentByEntity(entity)
 exports['samy-citizens']:IsResidentEntity(entity)
+exports['samy-citizens']:IsHostage(npcId)                -- true, rehinAlanSrc | false
 exports['samy-citizens']:ReportEvent(npcId, citizenid, 'saved', 'Ahmet beni hastaneye yetiştirdi.')  -- Config.Events anahtarları
 exports['samy-citizens']:AddMemory(npcId, citizenid, text, importance, { valence = 1, shareable = true })
 exports['samy-citizens']:ModifyRelationship(npcId, citizenid, dAffinity, dTrust)
@@ -229,6 +243,7 @@ exports['samy-citizens']:GetRelationship(npcId, citizenid) -- önbellekteki ili�
 - **Dispatch:** `Config.Dispatch.System = 'ps-dispatch' | 'cd_dispatch' | 'custom' | 'none'`. `custom` için `Config.Dispatch.Custom(data)` fonksiyonunu doldur.
 - **Hediye:** sakinlerde ox_target `Hediye ver` seçeneği vardır (sunucu `RemoveItem` ile eşyayı alır, günlük bonus sınırlıdır).
 - **Saat senkronu:** qb-weathersync otomatik tanınır; başka bir sistemde `Config.TimeSource = 'client'` yeterlidir.
+- **Rehine alma:** sunucunda başka bir rehine/kidnap script'i varsa `Config.Hostage.Enabled = false` ile kapat ya da `Config.Hostage.Keys` tuşlarını çakışmayacak şekilde değiştir (varsayılan `E/G/H/J/K`).
 
 ## 11. Bilinen sınırlamalar
 
