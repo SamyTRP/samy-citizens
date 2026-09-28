@@ -54,12 +54,48 @@ handlers.cancel_appointment = function(ctx, a, out)
 end
 
 handlers.follow_player = function(ctx, a, out)
+    return handlers.command(ctx, { type = 'command', cmd = 'follow', minutes = a.minutes }, out)
+end
+
+-- "ne dersek yapsın": komut, konuşma bittikten sonra SC.Life.Run ile uygulanır
+local CMD_STAGE = { follow = 'follow_player', wait = 'wait', ['goto'] = 'goto_waypoint', ride = 'ride', perform = 'perform',
+    outing = 'outing', go_home = 'go_home', report = 'report_police' }
+
+handlers.command = function(ctx, a, out)
+    local need = CMD_STAGE[a.cmd]
+    if need and not SC.StageAtLeast(ctx.rel.stage, Config.Actions.MinStage[need] or 'friend') then return end
+    if a.cmd == 'report' then
+        -- ihbar konuşmayı bitirmez; SMS ile de istenebilir
+        if ctx.src then SC.Life.Report(ctx.r, ctx.src, a.reason) end
+        return
+    end
     if ctx.channel ~= 'talk' then return end
-    if not SC.StageAtLeast(ctx.rel.stage, Config.Actions.MinStage.follow_player) then return end
-    local minutes = Utils.Clamp(math.floor(tonumber(a.minutes) or 3), 1, Config.Actions.FollowMaxMinutes or 5)
-    out.follow = minutes
+    if a.cmd == 'follow' then
+        a.minutes = Utils.Clamp(math.floor(tonumber(a.minutes) or 5), 1, Config.Actions.FollowMaxMinutes or 10)
+    end
+    out.command = a
     out.endConversation = true
-    out.ui[#out.ui + 1] = { type = 'follow', text = L('ui_follow', ctx.r.firstname, minutes) }
+end
+
+-- meslek hizmeti (sipariş, tedavi, tamir)
+handlers.service = function(ctx, a, out)
+    if not (Config.JobServices or {}).Enabled then return end
+    local ui, cmd = SC.Life.Service(ctx, a)
+    if ui then out.ui[#out.ui + 1] = { type = 'service', text = ui } end
+    if cmd then
+        out.command = cmd
+        out.endConversation = true
+    end
+end
+
+-- oyuncunun karşılık hareketi (sarılma, öpücük, çak bir beşlik)
+handlers.player_anim = function(ctx, a, out)
+    if ctx.channel ~= 'talk' or type(a.anim) ~= 'string' then return end
+    TriggerClientEvent('samy-citizens:client:playerAnim', ctx.src, a.anim, SC.Spawner.peds[ctx.r.id] and SC.Spawner.peds[ctx.r.id].netId or nil)
+end
+
+handlers.release_hostage = function(ctx, a, out)
+    if SC.Hostage and SC.Hostage.Is(ctx.r) and ctx.r.override.taker == ctx.src then out.releaseHostage = true end
 end
 
 handlers.give_directions = function(ctx, a, out)

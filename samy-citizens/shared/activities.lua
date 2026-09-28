@@ -25,6 +25,8 @@ SC.Activities = {
     appointment = { tags = { 'wait', 'idle', 'leisure' }, neverInside = true, needs = { energy = -2, hunger = 3, social = 8, fun = 5 }, scenario = 'WORLD_HUMAN_STAND_IMPATIENT' },
     hospital    = { inside = true, needs = { energy = 4, hunger = 2, social = -3, fun = -4 } },
     follow      = { needs = { energy = -3, hunger = 4, social = 8, fun = 5 } },
+    -- sabit görev noktası (admin: "özel görevli olarak dik"): nöbet, bekçilik, kapı görevlisi...
+    guard       = { tags = { 'post' }, busy = true, firm = true, neverInside = true, needs = { energy = -3, hunger = 4, social = 0, fun = -1 }, scenario = 'WORLD_HUMAN_GUARD_STAND' },
 }
 
 -- Rutin şablonlarında kullanılabilen "esnek" aktiviteler (gün içinde ihtiyaca göre çözülür)
@@ -54,6 +56,24 @@ SC.Gestures = {
     no       = { dict = 'gestures@m@standing@casual', anim = 'gesture_head_no', dur = 1500 },
     talk     = { dict = 'gestures@m@standing@casual', anim = 'gesture_easy_now', dur = 2000 },
     thanks   = { dict = 'mp_common', anim = 'givetake1_a', dur = 1800 },
+    give     = { dict = 'mp_common', anim = 'givetake1_a', dur = 1800 },
+    -- tüm vücut, karşılıklı (sakin oyuncuya yaklaşır; oyuncu da karşılık hareketini yapar)
+    hug      = { dict = 'mp_ped_interaction', anim = 'hugs_guy_a', dur = 3600, flag = 0, approach = 0.95 },
+    kiss     = { dict = 'mp_ped_interaction', anim = 'kisses_guy_a', dur = 4200, flag = 0, approach = 0.9 },
+    highfive = { dict = 'mp_ped_interaction', anim = 'highfive_guy_a', dur = 2600, flag = 0, approach = 1.1 },
+    handshake = { dict = 'mp_ped_interaction', anim = 'handshake_guy_a', dur = 3000, flag = 0, approach = 1.0 },
+    medic    = { dict = 'anim@amb@business@weed@weed_inspecting_high_dry@', anim = 'weed_inspecting_high_base_inspector', dur = 5000, flag = 1, approach = 1.0 },
+}
+
+-- Oyuncunun karşılık hareketleri (client/life.lua)
+SC.PlayerAnims = {
+    hug      = { dict = 'mp_ped_interaction', anim = 'hugs_guy_b', dur = 3600, flag = 0, face = true, delay = 1300 },
+    kiss     = { dict = 'mp_ped_interaction', anim = 'kisses_guy_b', dur = 4200, flag = 0, face = true, delay = 1300 },
+    highfive = { dict = 'mp_ped_interaction', anim = 'highfive_guy_b', dur = 2600, flag = 0, face = true, delay = 1100 },
+    handshake = { dict = 'mp_ped_interaction', anim = 'handshake_guy_b', dur = 3000, flag = 0, face = true, delay = 1100 },
+    take     = { dict = 'mp_common', anim = 'givetake1_b', dur = 1800, flag = 48 },
+    drink    = { dict = 'mp_player_intdrink', anim = 'loop_bottle', dur = 4500, flag = 49, prop = 'prop_ld_flow_bottle' },
+    eat      = { dict = 'mp_player_inteat@burger', anim = 'mp_player_int_eat_burger', dur = 4500, flag = 49, prop = 'prop_cs_burger_01' },
 }
 
 SC.Emotions = {
@@ -78,4 +98,7 @@ SC.Scenarios = {
     'WORLD_HUMAN_SEAT_LEDGE', 'WORLD_HUMAN_SEAT_STEPS', 'WORLD_HUMAN_SEAT_WALL', 'PROP_HUMAN_SEAT_BENCH',
     'PROP_HUMAN_SEAT_CHAIR', 'PROP_HUMAN_SEAT_CHAIR_DRINK', 'PROP_HUMAN_SEAT_CHAIR_FOOD', 'PROP_HUMAN_SEAT_BAR',
     'PROP_HUMAN_BBQ', 'CODE_HUMAN_MEDIC_TIME_OF_DEATH', 'WORLD_HUMAN_CHEERING',
+    'WORLD_HUMAN_COP_IDLES', 'WORLD_HUMAN_SECURITY_SHINE_TORCH', 'WORLD_HUMAN_STAND_IMPATIENT_UPRIGHT', 'CODE_HUMAN_POLICE_CROWD_CONTROL',
+    'CODE_HUMAN_POLICE_INVESTIGATE', 'WORLD_HUMAN_AA_SMOKE', 'WORLD_HUMAN_PAPARAZZI', 'WORLD_HUMAN_MUSCLE_FLEX', 'WORLD_HUMAN_SUNBATHE_BACK',
+    'WORLD_HUMAN_BUM_STANDING', 'WORLD_HUMAN_HUMAN_STATUE', 'WORLD_HUMAN_TENNIS_PLAYER', 'WORLD_HUMAN_GOLF_PLAYER', 'WORLD_HUMAN_POWER_WALKER',
 }

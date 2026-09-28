@@ -257,6 +257,10 @@ function Spawner.BuildTask(r)
             local partner = ov.partner and Spawner.peds[ov.partner]
             if partner then return { kind = 'chat', partner = partner.netId } end
         end
+        if SC.Life then
+            local spec = SC.Life.BuildTask(r, ov)
+            if spec then return spec end
+        end
     end
     if st.activity == 'commute' then
         local to = st.toPos
@@ -425,6 +429,7 @@ function Spawner.Despawn(r, reason, keepVehicle)
     if not phys then return end
     if r.convo and SC.Convo then SC.Convo.End(r, 'despawn') end
     if SC.Hostage and SC.Hostage.Is(r) then SC.Hostage.End(r, 'despawn') end
+    if SC.Life then SC.Life.OnDespawn(r) end
     -- takip / buluşma ped'e bağlıdır: ped silinirken sakin bulunduğu yerde serbest kalır
     if r.override and (r.override.type == 'follow' or r.override.type == 'meet' or r.override.type == 'chat') then
         Sim.ClearOverride(r, 'despawn')
@@ -451,7 +456,8 @@ local function farthestEvictable()
     local best, bestD = nil, -1
     for rid, phys in pairs(Spawner.peds) do
         local r = Sim.Residents[rid]
-        if r and not r.convo and not (r.override and (r.override.type == 'follow' or r.override.type == 'meet' or r.override.type == 'hostage')) then
+        local ot = r and r.override and r.override.type
+        if r and not r.convo and not (ot == 'follow' or ot == 'meet' or ot == 'hostage' or ot == 'ride' or ot == 'goto') then
             if (phys.minDist or 0) > bestD then best, bestD = r, phys.minDist or 0 end
         end
     end
@@ -590,6 +596,7 @@ RegisterNetEvent('samy-citizens:server:taskEvent', function(netId, seq, event, d
     if seq ~= phys.seq then return end
 
     local now = Clock.Now()
+    if r.override and SC.Life and SC.Life.OnTaskEvent(r, event) then return end
     if event == 'arrived' or event == 'parked' then
         if r.state.activity == 'commute' and r.state.mode ~= 'transit' and not r.convo and not r.override then
             phys.traveling = false

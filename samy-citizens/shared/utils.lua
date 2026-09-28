@@ -315,7 +315,8 @@ end
 -- ---------------------------------------------------------------------
 -- İlişki aşamaları (paylaşılan)
 -- ---------------------------------------------------------------------
-SC.StageOrder = { enemy = -2, cold = -1, stranger = 0, acquaintance = 1, friend = 2, close_friend = 3 }
+SC.StageOrder = { enemy = -2, cold = -1, stranger = 0, acquaintance = 1, friend = 2, close_friend = 3, lover = 4 }
+SC.StageList = { 'enemy', 'cold', 'stranger', 'acquaintance', 'friend', 'close_friend', 'lover' }
 
 function SC.StageAtLeast(stage, minStage)
     return (SC.StageOrder[stage] or 0) >= (SC.StageOrder[minStage] or 0)

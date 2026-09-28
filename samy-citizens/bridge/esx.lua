@@ -55,6 +55,25 @@ function Bridge.GetMoney(src, account)
     return x.getMoney and x.getMoney() or 0
 end
 
+function Bridge.RemoveMoney(src, account, amount)
+    local x = getPlayer(src)
+    if not x then return false end
+    if account == 'bank' then
+        local acc = x.getAccount and x.getAccount('bank')
+        if not acc or acc.money < amount then return false end
+        x.removeAccountMoney('bank', amount)
+        return true
+    end
+    if (x.getMoney and x.getMoney() or 0) < amount then return false end
+    x.removeMoney(amount)
+    return true
+end
+
+-- açlık / susuzluk (esx_status: 0-1000000)
+function Bridge.AddStatus(src, kind, amount)
+    TriggerClientEvent('esx_status:add', src, kind == 'hunger' and 'hunger' or 'thirst', math.floor((amount or 25) * 10000))
+end
+
 function Bridge.GetSourceByCitizenId(cid)
     local x = ESX.GetPlayerFromIdentifier(cid)
     return x and x.source or nil

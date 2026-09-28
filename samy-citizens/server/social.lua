@@ -107,6 +107,7 @@ function Social.ShareGossip(from, to, mem)
         valence = mem.valence or 0, sourceId = mem.id, sourceNpc = from.id, shareable = false,
         data = { code = mem.code, from = from.id },
     })
+    if SC.Life then SC.Life.OnGossip(from, to, mem) end
     if (mem.valence or 0) ~= 0 then
         local rel = SC.Rel.Get(to.id, mem.citizenid)
         local d = (mem.valence or 0) * (Config.Social.GossipAffinity or 6)

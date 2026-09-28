@@ -69,6 +69,18 @@ end
 
 local ID_PATTERN = '^[a-z0-9_]+$'
 
+-- çok satırlı metin (satır sonları korunur)
+local function multiline(v, max)
+    if type(v) ~= 'string' then return nil end
+    local lines = {}
+    for line in v:gmatch('[^\r\n]+') do
+        local t = Utils.Trim(line)
+        if t ~= '' then lines[#lines + 1] = Utils.Truncate(t, 300) end
+    end
+    if #lines == 0 then return nil end
+    return Utils.Truncate(table.concat(lines, '\n'), max or 1500)
+end
+
 local function slugify(s)
     local f = Utils.Fold(s or ''):gsub('[^a-z0-9]+', '_'):gsub('^_+', ''):gsub('_+$', '')
     return Utils.Truncate(f, 40)
@@ -123,7 +135,9 @@ end)
 
 register('bootstrap', function(src)
     local locs, routines = {}, {}
-    for id, loc in pairs(Sim.Locations) do locs[#locs + 1] = { id = id, label = loc.label, type = loc.type } end
+    for id, loc in pairs(Sim.Locations) do
+        if not loc.synthetic then locs[#locs + 1] = { id = id, label = loc.label, type = loc.type } end
+    end
     table.sort(locs, function(a, b) return a.label < b.label end)
     for id, rt in pairs(Sim.Routines) do routines[#routines + 1] = { id = id, label = rt.label } end
     table.sort(routines, function(a, b) return a.label < b.label end)
@@ -143,11 +157,14 @@ register('bootstrap', function(src)
     return {
         locations = locs, routines = routines, activities = acts, scenarios = SC.Scenarios,
         locationTypes = SC.LocationTypes, tags = tags, weekdays = LT('weekdays_short'),
-        stages = { 'enemy', 'cold', 'stranger', 'acquaintance', 'friend', 'close_friend' },
+        stages = SC.StageList,
         stageLabels = {
             enemy = L('stage_enemy'), cold = L('stage_cold'), stranger = L('stage_stranger'),
             acquaintance = L('stage_acquaintance'), friend = L('stage_friend'), close_friend = L('stage_close_friend'),
+            lover = L('stage_lover'),
         },
+        presets = SC.AdminPresets and SC.AdminPresets.List() or {},
+        pools = SC.AdminPresets and SC.AdminPresets.Pools() or {},
         generateEnabled = true,
         locale = Config.Locale,
     }
@@ -163,7 +180,7 @@ register('resident', function(src, id)
             citizenid = rel.citizenid, name = rel.char_name or '?', stage = rel.stage, stageLabel = SC.Rel.StageLabel(rel.stage),
             familiarity = rel.familiarity, affinity = rel.affinity, trust = rel.trust, timesMet = rel.times_met,
             meetDays = rel.meet_days, lastSeen = rel.last_seen > 0 and Utils.RelativeAge(os.time() - rel.last_seen) or '-',
-            phoneKnown = rel.phone_known,
+            phoneKnown = rel.phone_known, lover = rel.stage == 'lover', talks = SC.Rel.Talks(rel),
         }
     end
     local appts = {}
@@ -176,6 +193,7 @@ register('resident', function(src, id)
             voice_id = r.voice_id, personality = r.personality, backstory = r.backstory, job = r.job, homeId = r.homeId,
             vehicle = r.vehicle, favorite_places = r.favorite_places, acquaintances = r.acquaintances, routine_id = r.routine_id,
             phone_number = r.phone_number, enabled = r.enabled, hasAppearance = r.appearance ~= nil, topics = r.topics or {},
+            settings = r.settings or {},
         },
         row = residentRow(r),
         plan = Sim.GetPlanView(r, Clock.Day(), false),
@@ -218,8 +236,27 @@ local function validateResident(d)
     local t = type(d.topics) == 'table' and d.topics or {}
     out.topics = {}
     for _, key in ipairs(TOPIC_KEYS) do
-        local v = str(t[key], 400)
+        -- sırlar: her satıra bir sır (birden çok)
+        local v = key == 'secret' and multiline(t[key], 1500) or str(t[key], 400)
         if v then out.topics[key] = v end
+    end
+    -- özel ayarlar: görev noktası, sırların kime söyleneceği, aşka açıklık
+    local st = type(d.settings) == 'table' and d.settings or {}
+    out.settings = {}
+    local secretStage = str(st.secretStage, 20)
+    if secretStage and (secretStage == 'never' or SC.StageOrder[secretStage]) then out.settings.secretStage = secretStage end
+    if st.romance == false then out.settings.romance = false end
+    local pst = type(st.post) == 'table' and st.post or nil
+    if pst and pst.enabled then
+        local x, y, z = tonumber(pst.x), tonumber(pst.y), tonumber(pst.z)
+        if not x or not y or not z or math.abs(x) > 10000 or math.abs(y) > 10000 or math.abs(z) > 3000 then return nil, 'post' end
+        local from, to = str(pst.from, 5), str(pst.to, 5)
+        if (from and not Utils.ParseTime(from)) or (to and not Utils.ParseTime(to)) then return nil, 'post_hours' end
+        out.settings.post = {
+            enabled = true, x = x + 0.0, y = y + 0.0, z = z + 0.0, h = ((tonumber(pst.h) or 0.0) % 360.0),
+            scenario = (type(pst.scenario) == 'string' and Utils.Contains(SC.Scenarios, pst.scenario)) and pst.scenario or 'WORLD_HUMAN_GUARD_STAND',
+            from = from, to = to, label = str(pst.label, 60),
+        }
     end
     local j = type(d.job) == 'table' and d.job or {}
     out.job = { title = str(j.title, 60) or '' }
@@ -288,6 +325,9 @@ register('saveResident', function(src, d)
     if r then
         local respawn = r.model ~= data.model or Utils.JsonEncode(r.vehicle) ~= Utils.JsonEncode(data.vehicle) or d.resetAppearance
         for k, v in pairs(data) do r[k] = v end
+        -- kişilik/meslek önbellekleri (ton, argo, meslek kategorisi) yeniden hesaplansın
+        r._tone, r._argo, r._quirks, r._years, r._jobCat, r._jobCatTitle = nil, nil, nil, nil, nil, nil
+        Sim.RefreshPost(r)
         if not data.vehicle then r.vehicle = nil end
         if not data.voice_id then r.voice_id = nil end
         r.appearance = data.appearance
@@ -378,7 +418,9 @@ end
 
 register('locations', function(src)
     local out = {}
-    for _, loc in pairs(Sim.Locations) do out[#out + 1] = locationPayload(loc) end
+    for _, loc in pairs(Sim.Locations) do
+        if not loc.synthetic then out[#out + 1] = locationPayload(loc) end
+    end
     table.sort(out, function(a, b) return a.label < b.label end)
     return out
 end)
@@ -712,7 +754,7 @@ local function pickMany(list, n)
     return out
 end
 
-register('generate', function(src)
+local function legacyGenerate()
     local cats = {}
     for k in pairs(JOB_CATEGORIES) do cats[#cats + 1] = k end
     table.sort(cats)
@@ -804,6 +846,120 @@ register('generate', function(src)
         routine_id = Sim.Routines[spec.routine] and spec.routine or 'day_worker',
         enabled = true,
     }
+end
+
+-- ---------------------------------------------------------------------
+-- Kalıptan taslak (data/presets.lua): panelde "Kalıp seç" -> düzenle -> kaydet
+-- ---------------------------------------------------------------------
+local BIKES = { faggio = true, faggio2 = true, faggio3 = true, bati = true, akuma = true, sanchez = true, pcj = true, hexer = true, daemon = true }
+local AdminPresets = {}
+SC.AdminPresets = AdminPresets
+
+function AdminPresets.List()
+    local out = {}
+    for _, a in ipairs((SCPresets or {}).Archetypes or {}) do out[#out + 1] = { id = a.id, label = a.label, gender = a.gender } end
+    return out
+end
+
+function AdminPresets.Pools()
+    return (SCPresets or {}).Pools or {}
+end
+
+local function freeHome()
+    local homeCounts, homes = {}, {}
+    for id, loc in pairs(Sim.Locations) do
+        if loc.type == 'home' then
+            homes[#homes + 1] = id
+            homeCounts[id] = 0
+        end
+    end
+    for _, r in ipairs(Sim.List) do if homeCounts[r.homeId] then homeCounts[r.homeId] = homeCounts[r.homeId] + 1 end end
+    table.sort(homes, function(a, b)
+        if homeCounts[a] == homeCounts[b] then return a < b end
+        return homeCounts[a] < homeCounts[b]
+    end)
+    return homes[1]
+end
+
+function AdminPresets.Build(p, wantGender)
+    local pools = AdminPresets.Pools()
+    local gender = p.gender or ((wantGender == 'male' or wantGender == 'female') and wantGender) or (math.random() < 0.5 and 'female' or 'male')
+    local age = math.random(p.age and p.age[1] or 22, p.age and p.age[2] or 55)
+    local bracket = age < 32 and 'young' or (age < 58 and 'middle' or 'old')
+    local model = pickFrom((p.models or {})[gender]) or pickFrom(MODEL_POOLS[gender][bracket])
+    local firstname, lastname = pickFrom(NAMES[gender]), pickFrom(SURNAMES)
+    local job = p.job or {}
+    local title = pickFrom(job.titles) or 'Serbest çalışan'
+    local work = pickFrom(Sim.FindLocationsByType(job.types or {}, false))
+    local origin = pickFrom(pools.origins or ORIGINS)
+    local hobbies = pickMany(p.hobbies or HOBBIES, 3)
+    local publics = {}
+    for id, loc in pairs(Sim.Locations) do if loc.public and (not work or id ~= work.id) then publics[#publics + 1] = id end end
+    local baseId = slugify(firstname .. '_' .. lastname)
+    local id, n = baseId ~= '' and baseId or 'sakin', 1
+    while Sim.Residents[id] do
+        n = n + 1
+        id = baseId .. '_' .. n
+    end
+    local vehicle
+    if age >= 18 and math.random() < (p.car or 0.4) then
+        local m = pickFrom(p.cars or CARS)
+        vehicle = {
+            model = m,
+            plate = (Utils.Ascii(firstname):upper():gsub('[^%w]', ''):sub(1, 5)) .. tostring(math.random(100, 999)),
+            color = { math.random(0, 150), math.random(0, 150) }, type = BIKES[m] and 'bike' or 'automobile',
+        }
+    end
+    local T = p.topics or {}
+    local secrets = pickMany(T.secret or pools.secret or {}, 2)
+    local topics = {
+        origin = origin .. ' doğumluyum, sonra buraya taşındım.',
+        family = pickFrom(pools.family), food = pickFrom(pools.food), music = pickFrom(pools.music),
+        work_opinion = pickFrom(T.work_opinion) or pickFrom(pools.work_opinion),
+        dream = pickFrom(T.dream) or pickFrom(pools.dream),
+        secret = #secrets > 0 and table.concat(secrets, '\n') or nil,
+    }
+    if (job.types == nil or #job.types == 0) and not work then
+        topics.job = title .. ' olarak yıllarca çalıştım, artık dinleniyorum.'
+    end
+    local jobLower = SC.Dialogue.Lowerfirst(title)
+    local bio = ("%s doğumlu. Los Santos'a yıllar önce taşındı ve %s olarak çalışıyor. Boş zamanlarında %s ile uğraşıyor.")
+        :format(origin, jobLower, hobbies[1] or 'yürüyüş')
+    return {
+        id = id, firstname = firstname, lastname = lastname, age = age, gender = gender, model = model,
+        personality = {
+            traits = pickMany(p.traits or TRAITS, math.min(5, #(p.traits or TRAITS))), speech_style = pickFrom(p.speech) or pickFrom(SPEECH),
+            values = pickFrom(pools.values) or 'Aile, dürüstlük', fears = pickFrom(pools.fears) or 'Yalnız kalmak',
+            hobbies = hobbies,
+        },
+        backstory = bio,
+        topics = topics,
+        job = {
+            title = title, workplaceId = work and work.id or nil,
+            shift = job.shift and { start = job.shift[1], ['end'] = job.shift[2] } or nil,
+            workdays = job.workdays or { 1, 2, 3, 4, 5 },
+        },
+        homeId = freeHome(),
+        vehicle = vehicle,
+        favorite_places = pickMany(publics, 3),
+        acquaintances = {},
+        routine_id = Sim.Routines[job.routine or ''] and job.routine or 'day_worker',
+        settings = {},
+        enabled = true,
+        preset = p.id,
+    }
+end
+
+register('generate', function(src, payload)
+    payload = type(payload) == 'table' and payload or {}
+    local list = (SCPresets or {}).Archetypes or {}
+    local preset
+    if type(payload.preset) == 'string' then
+        for _, a in ipairs(list) do if a.id == payload.preset then preset = a end end
+    end
+    if not preset and #list > 0 and math.random() < 0.85 then preset = list[math.random(#list)] end
+    if preset then return AdminPresets.Build(preset, payload.gender) end
+    return legacyGenerate()
 end)
 
 

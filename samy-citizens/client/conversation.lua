@@ -81,9 +81,32 @@ lib.addKeybind({
     end,
 })
 
+-- Mesajla birlikte gönderilen bağlam: haritadaki işaret ve yakındaki araç (sunucu doğrular)
+-- "haritada işaretlediğim yere git", "arabamı tamir eder misin" gibi istekler için
+local function convoMeta()
+    local meta = {}
+    local blip = GetFirstBlipInfoId(8)
+    if blip ~= 0 and DoesBlipExist(blip) then
+        local c = GetBlipInfoIdCoord(blip)
+        local found, gz = GetGroundZFor_3dCoord(c.x, c.y, 1000.0, false)
+        meta.wp = { x = c.x, y = c.y, z = found and gz or nil }
+    end
+    local ped = cache.ped
+    local pc = GetEntityCoords(ped)
+    local veh = GetVehiclePedIsIn(ped, true)
+    if veh == 0 or not DoesEntityExist(veh) or #(GetEntityCoords(veh) - pc) > 8.0 then
+        veh = lib.getClosestVehicle(pc, 8.0, true)
+    end
+    if veh and veh ~= 0 and DoesEntityExist(veh) and NetworkGetEntityIsNetworked(veh) then
+        meta.veh = NetworkGetNetworkIdFromEntity(veh)
+    end
+    return meta
+end
+ConvoUI.Meta = convoMeta
+
 RegisterNUICallback('convo:send', function(data, cb)
     if ConvoUI.active and type(data) == 'table' and type(data.text) == 'string' then
-        TriggerServerEvent('samy-citizens:server:say', data.text)
+        TriggerServerEvent('samy-citizens:server:say', data.text, convoMeta())
     end
     cb({ ok = true })
 end)
@@ -175,8 +198,34 @@ local function startRender()
     end)
 end
 
+-- Konuşurken dudak hareketi (yerel görsel efekt; her istemci kendisi oynatır)
+local talking = {}
+local function lipSync(ent, text)
+    if not ent or ent == 0 or not DoesEntityExist(ent) then return end
+    local id = (talking[ent] or 0) + 1
+    talking[ent] = id
+    CreateThread(function()
+        RequestAnimDict('mp_facial')
+        local t = GetGameTimer() + 1000
+        while not HasAnimDictLoaded('mp_facial') and GetGameTimer() < t do Wait(10) end
+        if not DoesEntityExist(ent) then return end
+        PlayFacialAnim(ent, 'mic_chatter', 'mp_facial')
+        -- okuma hızına yakın: karakter başına ~55 ms (en az 1.2, en çok 7 sn)
+        Wait(math.max(1200, math.min(7000, #text * 55)))
+        if talking[ent] ~= id or not DoesEntityExist(ent) then return end
+        talking[ent] = nil
+        local male = IsPedMale(ent)
+        PlayFacialAnim(ent, 'mood_normal_1', male and 'facials@gen_male@variations@normal' or 'facials@gen_female@variations@normal')
+        local emo = SC.Emotions[Entity(ent).state.scEmo or 'neutral']
+        if emo then SetFacialIdleAnimOverride(ent, emo, 0) end
+    end)
+end
+
 RegisterNetEvent('samy-citizens:client:bubble', function(data)
     if type(data) ~= 'table' or type(data.text) ~= 'string' then return end
+    if data.kind ~= 'thinking' and data.text ~= '...' then
+        CreateThread(function() lipSync(bubbleEntity(data), data.text) end)
+    end
     local key = data.net and ('n' .. tostring(data.net)) or ('p' .. tostring(data.player))
     bubbles[key] = {
         net = data.net, player = data.player, text = data.text, kind = data.kind,

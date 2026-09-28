@@ -134,6 +134,8 @@ local function matchPattern(norm, tokens, pat, fuzzy)
     return nil
 end
 
+Dialogue.MatchPattern = matchPattern
+
 local function hasToken(tokens, ...)
     for _, t in ipairs(tokens) do
         for _, w in ipairs({ ... }) do
@@ -496,7 +498,7 @@ end
 function Dialogue.StageGroup(stage)
     if stage == 'enemy' or stage == 'cold' then return 'cold' end
     if stage == 'acquaintance' then return 'known' end
-    if stage == 'friend' or stage == 'close_friend' then return 'friend' end
+    if stage == 'friend' or stage == 'close_friend' or stage == 'lover' then return 'friend' end
     return 'stranger'
 end
 
@@ -525,6 +527,19 @@ end
 function Dialogue.Talkative(r)
     local traits = Utils.Fold(table.concat(r.personality.traits or {}, ' '))
     return traits:find('konuskan', 1, true) or traits:find('disa donuk', 1, true) or traits:find('enerjik', 1, true)
+end
+
+-- Argo / küfürbaz konuşan biri mi (samimi arkadaşıyla "naber lan" der)
+local ARGO_WORDS = { 'argo', 'kaba', 'kufurbaz', 'kufur', 'sokak agzi', 'agzi bozuk', 'lan' }
+function Dialogue.Argo(r)
+    if r._argo ~= nil then return r._argo end
+    local txt = Utils.Fold(table.concat(r.personality.traits or {}, ' ') .. ' ' .. tostring(r.personality.speech_style or ''))
+    r._argo = false
+    for _, w in ipairs(ARGO_WORDS) do
+        if txt:find(w, 1, true) then r._argo = true break end
+    end
+    if not r._argo and Dialogue.Tone(r) == 'grumpy' and (r.age or 40) < 55 and (r.gender or 'male') == 'male' then r._argo = true end
+    return r._argo
 end
 
 -- Konuşma tarzındaki tırnaklı kelimeler: hitaplar (sona) ve ağız alışkanlıkları (başa)
@@ -646,7 +661,7 @@ function Dialogue.Vars(r, rel)
         p = Dialogue.PlayerAddress(rel),
         hello = helloWord(),
         me = r.firstname,
-        job = r.job.title or '',
+        job = Dialogue.Lowerfirst(Utils.Trim((r.job.title or ''):gsub('%s*%b()', ''))),
         work = r.job.workplaceId and Sim.LocationLabel(r.job.workplaceId) or '',
         hobbies = joinList(r.personality.hobbies),
         hobby1 = (r.personality.hobbies or {})[1],
@@ -668,6 +683,8 @@ function Dialogue.Vars(r, rel)
         t_origin = topics.origin, t_food = topics.food, t_music = topics.music,
         years = tostring(years),
         car = r.vehicle and r.vehicle.model and Dialogue.Capitalize(r.vehicle.model) or nil,
+        shift_end = r.job and r.job.shift and r.job.shift['end'] or nil,
+        fact_dream = facts.dream, fact_food = facts.food, fact_music = facts.music, fact_pet = facts.pet,
     }
     -- "şu an ne yapıyorsun" cümlesi: boş kalacak yer tutucusu olmayanlardan, önceden doldurulmuş
     local function okLines(list)
@@ -727,7 +744,9 @@ function Dialogue.Bucket(key, r, stage, sub)
     if sub then return t[sub] end
     local tone = Dialogue.Tone(r)
     local g = Dialogue.StageGroup(stage)
-    for _, k in ipairs({ tone .. '_' .. g, g, tone, 'default' }) do
+    local order = { tone .. '_' .. g, g, tone, 'default' }
+    if stage == 'lover' then table.insert(order, 1, 'lover') end
+    for _, k in ipairs(order) do
         if t[k] and #t[k] > 0 then return t[k] end
     end
     for _, v in pairs(t) do return v end
@@ -762,7 +781,9 @@ function Dialogue.GrudgeLine(r, grudge)
         return (pick(lines):gsub('%%other%%', teller and teller.firstname or L('ctx_someone')))
     end
     local lines = D.Accuse[grudge.code]
-    return lines and pick(lines) or nil
+    if not lines then return nil end
+    local other = Sim.Residents[grudge.from or '']
+    return (pick(lines):gsub('%%other%%', other and other.firstname or L('ctx_someone')))
 end
 
 -- =====================================================================
@@ -791,11 +812,14 @@ local TOPIC_OF = {
     ask_plans = 'plans', ask_pet = 'pet', ask_sport = 'sport', ask_movie = 'movie', ask_car = 'car', ask_feeling = 'feeling',
     how_are_you = 'mood', player_mood_bad = 'pmood_bad', player_mood_good = 'pmood_good', ask_doing = 'doing',
     ask_home = 'home', ask_age = 'age', ask_favorite_place = 'fav',
+    order = 'order', ask_heal = 'health', ask_health = 'health', ask_repair = 'car', ask_expertise = 'job', job_q = 'job',
+    ask_more_secret = 'secret', player_secret = 'secret',
 }
 
 -- sakinin sorduğu soru türü -> oyuncu "sen?" derse sakinin cevaplayacağı niyet
 local BACK_OF = { player_mood = 'how_are_you', name = 'ask_name', job = 'ask_job', likes = 'ask_hobby', origin = 'ask_origin',
-    plans = 'ask_plans', player_day = 'ask_today', fav_place = 'ask_favorite_place' }
+    plans = 'ask_plans', player_day = 'ask_today', fav_place = 'ask_favorite_place', dream = 'ask_dream', family = 'ask_family',
+    food = 'ask_food', music = 'ask_music', pet = 'ask_pet', city = 'ask_city' }
 
 local FOLLOWUP_KINDS = { 'why', 'really', 'agree', 'ack', 'impressed', 'sympathy', 'me_too', 'tell_more', 'dont_know', 'how_long' }
 local FOLLOWUPS = {}
@@ -805,7 +829,8 @@ for _, k in ipairs(FOLLOWUP_KINDS) do FOLLOWUPS[k] = true end
 local HOSTAGE_KEYS = { threat = 'hostage_threat', calm = 'hostage_calm', ask_money = 'hostage_money', keep_secret = 'hostage_silence',
     ask_name = 'hostage_name', ask_phone = 'hostage_phone', release_promise = 'hostage_hope', insult = 'hostage_insult',
     how_are_you = 'hostage_how', ask_feeling = 'hostage_how', ask_family = 'hostage_family', goodbye = 'hostage_hope',
-    apology = 'hostage_calm', ask_job = 'hostage_job' }
+    apology = 'hostage_calm', ask_job = 'hostage_job', swear = 'hostage_insult', cmd_report = 'hostage_silence',
+    love_you = 'hostage_how', ask_out = 'hostage_how' }
 
 -- aynı ifadeden çıkan iç içe niyetler (ör. "bu akşam ne yapıyorsun" = plan, "ne yapıyorsun" değil)
 local OVERLAP = {
@@ -814,6 +839,10 @@ local OVERLAP = {
     how_are_you = { ask_feeling = true }, ask_job = { ask_doing = true }, ask_favorite_place = { ask_advice = true, ask_hobby = true },
     ask_advice = { ask_favorite_place = true }, ask_doing = { ask_plans = true, ask_today = true },
 }
+
+-- meşgulken (işte) konuşma sınırına sayılmayan niyetler: müşteri istekleri, veda, ihbar
+local BUSY_FREE = { order = true, ask_menu = true, ask_heal = true, ask_health = true, ask_repair = true, ask_expertise = true,
+    job_q = true, goodbye = true, cmd_report = true, expectation = true }
 
 -- dolgu sözcüğü ("Hmm.", "Valla.") eklenebilecek cevaplar
 local FILLER_OK = { ask_job = true, ask_hobby = true, ask_age = true, ask_home = true, ask_origin = true, ask_family = true,
@@ -824,7 +853,10 @@ local FILLER_OK = { ask_job = true, ask_hobby = true, ask_age = true, ask_home =
 -- bu niyetlerden sonra sakin kendiliğinden soru sormaz
 local NO_ASK = { goodbye = true, insult = true, threat = true, busy_end = true, fallback = true, meet_continue = true,
     propose_meet = true, cancel_meet = true, offer_drink = true, hostage = true, ask_directions = true, flirt = true, meta = true,
-    sensitive = true, ask_money = true, player_story = true, ask_secret = true, keep_secret = true, share = true }
+    sensitive = true, ask_money = true, player_story = true, ask_secret = true, keep_secret = true, share = true,
+    swear = true, banter = false, ask_out = true, love_you = true, breakup = true, hug = true, kiss = true, high_five = true,
+    cmd_wait = true, cmd_go_home = true, cmd_goto = true, cmd_ride = true, cmd_report = true, cmd_perform = true, ask_follow = true,
+    order = true, ask_menu = true, ask_heal = true, ask_repair = true, player_secret = true, ask_more_secret = true, cheated = true }
 
 local EMO = {
     greet = { 'happy', 'wave' }, compliment = { 'embarrassed', 'none' }, insult = { 'angry', 'none' }, threat = { 'scared', 'none' },
@@ -836,6 +868,11 @@ local EMO = {
     dont_know = { 'neutral', 'shrug' }, player_bored = { 'neutral', 'shrug' }, ask_advice = { 'neutral', 'point' },
     ask_money = { 'neutral', 'shrug' }, offer_help = { 'happy', 'none' }, keep_secret = { 'neutral', 'nod' }, ack = { 'neutral', 'nod' },
     me_too = { 'happy', 'none' }, player_story = { 'surprised', 'none' }, ask_smoke = { 'neutral', 'none' },
+    swear = { 'angry', 'no' }, banter = { 'happy', 'laugh' }, cmd_wait = { 'neutral', 'nod' }, cmd_go_home = { 'neutral', 'wave' },
+    cmd_goto = { 'neutral', 'nod' }, cmd_ride = { 'happy', 'nod' }, cmd_report = { 'scared', 'none' }, cmd_perform = { 'happy', 'none' },
+    order = { 'happy', 'give' }, ask_menu = { 'neutral', 'talk' }, ask_heal = { 'neutral', 'none' }, ask_health = { 'neutral', 'talk' },
+    ask_repair = { 'neutral', 'nod' }, ask_expertise = { 'neutral', 'talk' }, job_q = { 'neutral', 'talk' }, breakup = { 'sad', 'no' },
+    ask_out = { 'embarrassed', 'none' }, love_you = { 'embarrassed', 'none' }, player_secret = { 'surprised', 'none' },
 }
 
 local function purposeFromText(norm)
@@ -974,6 +1011,7 @@ end
 -- NİYET İŞLEYİCİLERİ
 -- =====================================================================
 local handlers = {}
+local wantsNow, outingFlow -- aşağıda (KOMUTLAR) tanımlanır; buluşma işleyicileri de kullanır
 
 -- sakin oyuncuya karşı soru sorar (ctx.noAskBack ile ikinci cevapta bastırılır)
 local function askBack(ctx, out, key, kind, chance)
@@ -1005,6 +1043,7 @@ handlers.how_are_you = function(ctx, a, out, vars)
     out.emotion = (moodKey == 'great' or moodKey == 'good') and 'happy' or ((moodKey == 'bad' or moodKey == 'awful') and 'sad' or 'neutral')
     if g == 'cold' then return out.say('how_are_you', 'cold') end
     out.say('how_are_you', moodKey)
+    if ctx.rel.stage == 'lover' and math.random() < 0.5 then out.say('lover_extra') end
     askBack(ctx, out, 'askback_mood', 'player_mood', Config.Dialogue.AskBackChance or 0.6)
 end
 
@@ -1160,7 +1199,9 @@ handlers.ask_yesterday = function(ctx, a, out, vars)
 end
 
 handlers.ask_remember = function(ctx, a, out, vars)
-    local rel, r = ctx.rel, ctx.r
+    local rel, r, c = ctx.rel, ctx.r, ctx.c
+    if rel.stage == 'lover' then return out.say('ask_remember', 'lover') end
+    local talks = SC.Rel.Talks(rel)
     if not ctx.dry then
         local grudge = Dialogue.FindCoded(r.id, ctx.cid, -1)
         local line = Dialogue.GrudgeLine(r, grudge)
@@ -1168,27 +1209,40 @@ handlers.ask_remember = function(ctx, a, out, vars)
             out.emotion = 'angry'
             return out.push(line)
         end
-        local last = MySQL.single.await([[SELECT data, created_at FROM samy_citizens_memories
-            WHERE npc_id = ? AND citizenid = ? AND archived = 0 AND data LIKE '%"kind":"convo"%' ORDER BY id DESC LIMIT 1]], { r.id, ctx.cid or '' })
-        if last then
-            local data = Utils.JsonDecode(last.data) or {}
-            vars.ago = Utils.RelativeAge(os.time() - (tonumber(last.created_at) or os.time()))
-            vars.loc = Sim.LocationLabel(data.place)
-            local phrases = {}
-            for _, k in ipairs(data.topics or {}) do if D.Topics[k] then phrases[#phrases + 1] = D.Topics[k] end end
-            if #phrases > 0 then
-                vars.topics = joinList(phrases)
-                out.say('ask_remember', 'convo')
-            else
-                out.say('ask_remember', 'convo_nosum')
+        if talks > 0 or SC.StageAtLeast(rel.stage, 'acquaintance') then
+            local last = MySQL.single.await([[SELECT data, created_at FROM samy_citizens_memories
+                WHERE npc_id = ? AND citizenid = ? AND archived = 0 AND data LIKE '%"kind":"convo"%' ORDER BY id DESC LIMIT 1]], { r.id, ctx.cid or '' })
+            if last then
+                local data = Utils.JsonDecode(last.data) or {}
+                vars.ago = Utils.RelativeAge(os.time() - (tonumber(last.created_at) or os.time()))
+                vars.loc = Sim.LocationLabel(data.place)
+                local phrases = {}
+                for _, k in ipairs(data.topics or {}) do if D.Topics[k] then phrases[#phrases + 1] = D.Topics[k] end end
+                if #phrases > 0 then
+                    vars.topics = joinList(phrases)
+                    out.say('ask_remember', 'convo')
+                else
+                    out.say('ask_remember', 'convo_nosum')
+                end
+                if vars.fact_job then out.say('ask_remember', 'fact_job') end
+                if vars.fact_like and math.random() < 0.5 then out.say('ask_remember', 'fact_like') end
+                out.emotion = 'happy'
+                return
             end
-            if vars.fact_job then out.say('ask_remember', 'fact_job') end
-            if vars.fact_like and math.random() < 0.5 then out.say('ask_remember', 'fact_like') end
-            out.emotion = 'happy'
-            return
         end
     end
-    if rel.times_met > 1 then return out.say('ask_remember', 'vague') end
+    -- gerçekten konuşmuş olmak (en az bir mesaj) şart; paneli açıp kapatmak ya da yanından geçmek "tanışmak" sayılmaz
+    if talks > 0 or SC.StageAtLeast(rel.stage, 'acquaintance') then
+        out.emotion = 'happy'
+        if vars.fact_job then
+            out.say('ask_remember', 'talked')
+            return out.say('ask_remember', 'fact_job')
+        end
+        return out.say('ask_remember', 'talked')
+    end
+    if (c.playerMsgs or 0) > 1 then return out.say('ask_remember', 'just_met') end
+    if ctx.heardOf then return out.say('ask_remember', 'heard') end
+    if (rel.times_met or 0) >= 3 then return out.say('ask_remember', 'seen') end
     return out.say('ask_remember', 'stranger')
 end
 
@@ -1283,16 +1337,80 @@ handlers.ask_dream = topicAnswer('ask_dream')
 handlers.ask_food = topicAnswer('ask_food')
 handlers.ask_music = topicAnswer('ask_music')
 
-handlers.ask_secret = function(ctx, a, out, vars)
-    local rel = ctx.rel
+-- Sırlar: her satır ayrı bir sır; kime söyleneceği sakinin ayarında (varsayılan: yakın arkadaş ve sevgili)
+function Dialogue.Secrets(r)
+    local raw = r.topics and r.topics.secret
+    local out = {}
+    if type(raw) ~= 'string' then return out end
+    for line in raw:gmatch('[^\n]+') do
+        local t = Utils.Trim(line)
+        if t ~= '' then out[#out + 1] = t end
+    end
+    return out
+end
+
+local function secretStage(r)
+    local st = r.settings and r.settings.secretStage
+    if st == 'never' then return nil end
+    if st and SC.StageOrder[st] then return st end
+    return 'close_friend'
+end
+
+handlers.ask_secret = function(ctx, a, out, vars, more)
+    local rel, r = ctx.rel, ctx.r
     local g = Dialogue.StageGroup(rel.stage)
     if g == 'cold' then return out.say('ask_secret', 'cold') end
-    if rel.stage ~= 'close_friend' then return out.say('ask_secret', 'default') end
-    local text = ctx.r.topics and ctx.r.topics.secret
-    if not text or text == '' then return out.say('ask_secret', 'empty') end
-    vars.text = text
+    local need = secretStage(r)
+    if not need or not SC.StageAtLeast(rel.stage, need) then
+        if need and SC.StageAtLeast(rel.stage, 'friend') then return out.say('ask_secret', 'not_yet') end
+        return out.say('ask_secret', 'default')
+    end
+    local list = Dialogue.Secrets(r)
+    if #list == 0 then return out.say('ask_secret', 'empty') end
+    local told = math.floor(tonumber((rel.facts or {}).secrets_n) or 0)
+    if told >= #list then
+        if more then return out.say('ask_secret', 'none_left') end
+        vars.text = list[math.random(#list)]
+        return out.say('ask_secret', 'friend')
+    end
+    vars.text = list[told + 1]
+    out.rel.facts = out.rel.facts or {}
+    out.rel.facts.secrets_n = told + 1
     out.dTrust = out.dTrust + 1
-    return out.say('ask_secret', 'friend')
+    out.topic = 'secret'
+    out.memories[#out.memories + 1] = {
+        text = L('mem_shared_secret', ctx.addr ~= '' and ctx.addr or L('ctx_this_person')), importance = 6, type = 'event', valence = 1,
+        data = { code = 'shared_secret' },
+    }
+    if told > 0 then return out.say('ask_secret', 'more') end
+    return out.say('ask_secret', rel.stage == 'lover' and 'lover' or 'friend')
+end
+
+handlers.ask_more_secret = function(ctx, a, out, vars) return handlers.ask_secret(ctx, a, out, vars, true) end
+
+handlers.player_secret = function(ctx, a, out, vars)
+    local g = Dialogue.StageGroup(ctx.rel.stage)
+    if g == 'cold' then return out.say('player_secret', 'cold') end
+    if g == 'stranger' then out.say('player_secret', 'stranger') end
+    -- "sana bir sır vereyim: ..." -> sır aynı cümledeyse hemen sakla
+    local body = ctx.text and ctx.text:match('[:%.,]%s*(.+)$')
+    if body and #Utils.Tokenize(body) >= 4 then
+        return Dialogue.StoreSecret(ctx, out, body)
+    end
+    ctx.c.expect = { kind = 'player_secret' }
+    return out.say('player_secret', 'ask')
+end
+
+function Dialogue.StoreSecret(ctx, out, text)
+    out.dTrust = out.dTrust + 3
+    out.dAff = out.dAff + 1
+    out.topic = 'secret'
+    out.memories[#out.memories + 1] = {
+        text = L('mem_player_secret', ctx.addr ~= '' and ctx.addr or L('ctx_this_person'), Utils.Truncate(Utils.Trim(text), 140)),
+        importance = 7, type = 'secret', valence = 1, shareable = false, data = { fact = 'secret' },
+    }
+    out.emotion = 'neutral'
+    return out.say('player_secret', 'stored')
 end
 
 handlers.ask_opinion_me = function(ctx, a, out, vars)
@@ -1336,10 +1454,17 @@ end
 
 handlers.propose_meet = function(ctx, a, out, vars)
     out.topics.propose_meet = true
+    if ctx.channel == 'talk' and wantsNow(a) and not a.slots.time and not a.slots.day
+        and SC.StageAtLeast(ctx.rel.stage, Config.Actions.MinStage.outing or 'friend') then
+        if outingFlow(ctx, a, out, vars) then return end
+    end
     return meetFlow(ctx, a, out, vars, true)
 end
 
 handlers.offer_drink = function(ctx, a, out, vars)
+    if ctx.channel == 'talk' and wantsNow(a) and SC.StageAtLeast(ctx.rel.stage, Config.Actions.MinStage.outing or 'friend') then
+        if outingFlow(ctx, a, out, vars) then return end
+    end
     if SC.StageAtLeast(ctx.rel.stage, Config.Actions.MinStage.create_appointment) then
         out.topics.propose_meet = true
         return meetFlow(ctx, a, out, vars, true)
@@ -1570,16 +1695,448 @@ handlers.flirt = function(ctx, a, out)
     return out.say('flirt')
 end
 
-handlers.ask_follow = function(ctx, a, out)
-    if ctx.channel ~= 'talk' then return out.say('ask_follow', 'default') end
-    local def = SC.Activities[ctx.r.state.activity]
-    if ctx.rel.stage == 'close_friend' then
-        if def and def.busy then return out.say('ask_follow', 'busy') end
-        out.actions[#out.actions + 1] = { type = 'follow_player', minutes = 3 }
-        return out.say('ask_follow', 'yes')
+-- =====================================================================
+-- KOMUTLAR ("ne dersek yapsın": arası iyi olan sakin)
+-- =====================================================================
+-- Komut kapısı: ilişki aşaması, kanal, meşguliyet, ruh hâli. false dönerse ret cümlesi söylenmiştir.
+local function cmdGate(ctx, out, key, opts)
+    opts = opts or {}
+    local rel, r = ctx.rel, ctx.r
+    local g = Dialogue.StageGroup(rel.stage)
+    if ctx.channel ~= 'talk' and not opts.sms then out.say('cmd_refuse', 'sms') return false end
+    if g == 'cold' then out.say('cmd_refuse', 'cold') return false end
+    local need = (Config.Actions.MinStage or {})[key] or 'friend'
+    if not SC.StageAtLeast(rel.stage, need) then
+        out.say('cmd_refuse', rel.stage == 'stranger' and 'stranger' or 'known')
+        return false
     end
-    if ctx.rel.stage == 'stranger' then return out.say('ask_follow', 'stranger') end
-    return out.say('ask_follow', 'default')
+    local act = r.state and r.state.activity
+    local def = SC.Activities[act or '']
+    if not opts.anyBusy and def and def.busy and act ~= 'commute'
+        and not SC.StageAtLeast(rel.stage, Config.Actions.MinStage.busy_obey or 'close_friend') then
+        out.say('cmd_refuse', 'busy')
+        return false
+    end
+    if not opts.anyMood and Sim.MoodKey(r) == 'awful' and rel.stage ~= 'lover' then
+        out.say('cmd_refuse', 'mood')
+        return false
+    end
+    return true
+end
+
+local function command(out, cmd, extra)
+    local a = { type = 'command', cmd = cmd }
+    for k, v in pairs(extra or {}) do a[k] = v end
+    out.actions[#out.actions + 1] = a
+end
+
+handlers.ask_follow = function(ctx, a, out)
+    if not cmdGate(ctx, out, 'follow_player') then return end
+    command(out, 'follow', { minutes = Config.Actions.FollowMaxMinutes or 10 })
+    out.emotion = 'happy'
+    return out.say('cmd_follow', ctx.rel.stage == 'lover' and 'lover' or 'yes')
+end
+
+handlers.cmd_wait = function(ctx, a, out)
+    if not cmdGate(ctx, out, 'wait') then return end
+    command(out, 'wait', { minutes = Config.Actions.WaitMinutes or 8 })
+    return out.say('cmd_wait', 'yes')
+end
+
+handlers.cmd_go_home = function(ctx, a, out)
+    local ov = ctx.r.override
+    if ov and (ov.type == 'follow' or ov.type == 'wait' or ov.type == 'goto' or ov.type == 'perform' or ov.type == 'ride') then
+        command(out, 'release')
+        return out.say('cmd_go_home', 'yes')
+    end
+    if SC.StageAtLeast(ctx.rel.stage, 'friend') and ctx.channel == 'talk' then
+        if not cmdGate(ctx, out, 'go_home') then return end
+        command(out, 'go_home')
+        return out.say('cmd_go_home', 'yes')
+    end
+    return out.say('cmd_go_home', 'none')
+end
+
+handlers.cmd_goto = function(ctx, a, out)
+    if not cmdGate(ctx, out, 'goto_waypoint') then return end
+    local wp = ctx.meta and ctx.meta.wp
+    if not wp then return out.say('cmd_goto', 'nowp') end
+    local far = ctx.npcPos and Utils.Dist2D(ctx.npcPos, wp) > (Config.Actions.GotoWalkMaxDistance or 350.0)
+    local mode = 'walk'
+    if far then mode = ctx.carNearby and 'drive' or 'taxi' end
+    command(out, 'goto', { wp = wp, mode = mode })
+    return out.say('cmd_goto', mode == 'walk' and 'yes' or mode)
+end
+
+local function rideLine(ctx, out)
+    local r = ctx.r
+    if not r.vehicle then out.say('cmd_ride', 'nocar') return false end
+    if r.car and r.car.missing then out.say('cmd_ride', 'stolen') return false end
+    if not ctx.carNearby then out.say('cmd_ride', 'far') return false end
+    return true
+end
+
+handlers.cmd_ride = function(ctx, a, out)
+    if not cmdGate(ctx, out, 'ride') then return end
+    if not rideLine(ctx, out) then return end
+    local wantsDest = hasToken(a.tokens, 'gotur', 'goturur', 'birak', 'birakir', 'oraya', 'suraya') or a.norm:find('isaret', 1, true)
+    local wp = wantsDest and ctx.meta and ctx.meta.wp or nil
+    command(out, 'ride', { wp = wp })
+    out.emotion = 'happy'
+    return out.say('cmd_ride', wp and 'dest' or 'yes')
+end
+
+handlers.cmd_report = function(ctx, a, out)
+    if not cmdGate(ctx, out, 'report_police', { sms = true, anyBusy = true, anyMood = true }) then return end
+    if ctx.reportBlocked then return out.say('cmd_report', 'cooldown') end
+    command(out, 'report', { reason = Utils.Truncate(ctx.text or '', 120) })
+    out.emotion = 'scared'
+    return out.say('cmd_report', 'yes')
+end
+
+-- "dans et", "otur", "sigara yak"... -> Config/Life'taki eylem anahtarı
+local PERFORM_WORDS = {
+    { 'dance', { 'dans', 'oyna', 'gobek' } }, { 'sit', { 'otur' } }, { 'smoke', { 'sigara' } },
+    { 'drink', { 'kadeh', 'serefe' } }, { 'pushups', { 'sinav' } }, { 'situps', { 'mekik' } }, { 'yoga', { 'yoga' } },
+    { 'music', { 'gitar', 'muzik', 'sarki' } }, { 'cheer', { 'alkis', 'tezahurat' } }, { 'photo', { 'fotograf', 'resim' } },
+    { 'flex', { 'kas' } }, { 'jog', { 'kos', 'isin', 'egzersiz', 'spor' } }, { 'phone', { 'telefon' } }, { 'binoculars', { 'durbun' } },
+    { 'lean', { 'yaslan' } }, { 'sunbathe', { 'gunes' } },
+}
+
+handlers.cmd_perform = function(ctx, a, out)
+    if not cmdGate(ctx, out, 'perform') then return end
+    local key
+    for _, pw in ipairs(PERFORM_WORDS) do
+        for _, w in ipairs(pw[2]) do
+            if a.norm:find(w, 1, true) then key = pw[1] break end
+        end
+        if key then break end
+    end
+    key = key or 'dance'
+    if Dialogue.Tone(ctx.r) == 'shy' and (key == 'dance' or key == 'music' or key == 'flex') and not SC.StageAtLeast(ctx.rel.stage, 'close_friend') then
+        return out.say('cmd_perform', 'shy')
+    end
+    command(out, 'perform', { key = key })
+    out.emotion = 'happy'
+    return out.say('cmd_perform', D.Lines.cmd_perform[key] and key or 'default')
+end
+
+-- "Hadi şimdi kahve içmeye gidelim": şimdi birlikte bir mekâna gitmek (randevu değil)
+wantsNow = function(a)
+    return hasToken(a.tokens, 'simdi', 'hemen', 'hadi', 'haydi') or a.norm:find('su an', 1, true) ~= nil
+end
+
+outingFlow = function(ctx, a, out, vars)
+    if not cmdGate(ctx, out, 'outing') then return true end
+    local _, types = purposeFromText(a.norm)
+    local loc = a.slots.place or recommendPlace(ctx.r, types)
+    if not loc then return false end
+    vars.loc = loc.label
+    command(out, 'outing', { locationId = loc.id })
+    out.actions[#out.actions + 1] = { type = 'give_directions', locationId = loc.id }
+    out.emotion = 'happy'
+    out.say('cmd_outing', 'yes')
+    return true
+end
+
+-- =====================================================================
+-- AŞK
+-- =====================================================================
+local function romanceClosed(r)
+    if r.settings and r.settings.romance == false then return true end
+    local fam = Utils.Fold((r.topics or {}).family or '')
+    if (fam:find('evliyim', 1, true) or fam:find('esim ', 1, true) or fam:find('nisanli', 1, true) or fam:find('sevgilim var', 1, true))
+        and not fam:find('evli degil', 1, true) then
+        return true
+    end
+    return false
+end
+Dialogue.RomanceClosed = romanceClosed
+
+handlers.ask_out = function(ctx, a, out, vars)
+    local rel, r = ctx.rel, ctx.r
+    local R = Config.Romance or {}
+    local g = Dialogue.StageGroup(rel.stage)
+    if rel.stage == 'lover' then
+        out.emotion = 'happy'
+        return out.say('ask_out', 'already')
+    end
+    if g == 'cold' then out.dAff = out.dAff - 1 return out.say('ask_out', 'cold') end
+    if R.Enabled == false then return out.say('ask_out', 'disabled') end
+    if romanceClosed(r) then return out.say('ask_out', 'taken') end
+    if rel.stage == 'stranger' then out.dAff = out.dAff - 2 return out.say('ask_out', 'stranger') end
+    local facts = rel.facts or {}
+    if facts.ex and os.time() - (tonumber(facts.broke_up_at) or 0) < 3 * 86400 then return out.say('ask_out', 'ex') end
+    if rel.stage == 'acquaintance' then return out.say('ask_out', 'known') end
+    if not SC.StageAtLeast(rel.stage, R.MinStage or 'close_friend') then return out.say('ask_out', 'friendzone') end
+    if rel.affinity < (R.MinAffinity or 70) or rel.trust < (R.MinTrust or 60) then return out.say('ask_out', 'soon') end
+    if not R.AllowMultiple and ctx.otherLovers and #ctx.otherLovers > 0 then
+        local other = Sim.Residents[ctx.otherLovers[1]]
+        -- başka sevgilisini tanıyorsa (aynı çevre) ya da dedikodusu geldiyse bilir
+        if other and SC.Social.Relation(r.id, other.id) then
+            vars.other = other.firstname
+            out.emotion = 'angry'
+            return out.say('ask_out', 'jealous')
+        end
+    end
+    out.rel.facts = out.rel.facts or {}
+    out.rel.facts.lover = true
+    out.rel.facts.lover_since = os.time()
+    out.rel.facts.ex = nil
+    out.dAff = out.dAff + 5
+    out.dTrust = out.dTrust + 3
+    out.event = 'became_lover'
+    out.emotion = 'happy'
+    out.animation = 'hug'
+    if ctx.channel == 'talk' then out.actions[#out.actions + 1] = { type = 'player_anim', anim = 'hug' } end
+    return out.say('ask_out', 'accept')
+end
+
+handlers.love_you = function(ctx, a, out, vars)
+    local rel = ctx.rel
+    local g = Dialogue.StageGroup(rel.stage)
+    if rel.stage == 'lover' then
+        out.emotion = 'happy'
+        out.dAff = out.dAff + 2
+        return out.say('love_you', 'lover')
+    end
+    if g == 'cold' then return out.say('love_you', 'cold') end
+    if rel.stage == 'close_friend' and not romanceClosed(ctx.r) then
+        out.emotion = 'embarrassed'
+        return out.say('love_you', 'close')
+    end
+    if g == 'friend' then return out.say('love_you', 'friend') end
+    if rel.stage == 'acquaintance' then return out.say('love_you', 'known') end
+    out.dAff = out.dAff - 1
+    return out.say('love_you', 'stranger')
+end
+
+handlers.breakup = function(ctx, a, out)
+    if ctx.rel.stage ~= 'lover' then return out.say('breakup', 'none') end
+    out.rel.facts = out.rel.facts or {}
+    out.rel.facts.lover = false
+    out.rel.facts.ex = true
+    out.rel.facts.broke_up_at = os.time()
+    out.event = 'broke_up'
+    out.emotion = 'sad'
+    out.say('breakup', 'lover')
+    if ctx.channel == 'talk' then out.actions[#out.actions + 1] = { type = 'end_conversation' } end
+end
+
+local function touchHandler(key, minStage, anim)
+    return function(ctx, a, out)
+        local rel = ctx.rel
+        local g = Dialogue.StageGroup(rel.stage)
+        if rel.stage == 'lover' then
+            out.emotion = 'happy'
+            out.animation = anim
+            if ctx.channel == 'talk' then out.actions[#out.actions + 1] = { type = 'player_anim', anim = anim } end
+            return out.say(key, 'lover')
+        end
+        if g == 'cold' then return out.say(key, 'cold') end
+        if key == 'kiss' then
+            if rel.stage == 'close_friend' then out.emotion = 'embarrassed' return out.say(key, 'close') end
+            out.dAff = out.dAff - (g == 'stranger' and 3 or 1)
+            out.emotion = g == 'stranger' and 'angry' or 'embarrassed'
+            return out.say(key, g == 'friend' and 'friend' or (g == 'known' and 'known' or 'stranger'))
+        end
+        if SC.StageAtLeast(rel.stage, minStage) then
+            out.emotion = 'happy'
+            out.animation = anim
+            if ctx.channel == 'talk' then out.actions[#out.actions + 1] = { type = 'player_anim', anim = anim } end
+        end
+        return out.say(key, g == 'friend' and 'friend' or (g == 'known' and 'known' or 'stranger'))
+    end
+end
+handlers.hug = touchHandler('hug', 'friend', 'hug')
+handlers.kiss = touchHandler('kiss', 'lover', 'kiss')
+handlers.high_five = touchHandler('high_five', 'acquaintance', 'highfive')
+
+-- =====================================================================
+-- KÜFÜR / ARGO
+-- =====================================================================
+local FRIENDLY = { greet = true, how_are_you = true, ask_doing = true, thanks = true, laugh = true, compliment = true, agree = true,
+    me_too = true, miss_you = true, goodbye = true, impressed = true, player_mood_good = true, ask_plans = true, yes = true }
+
+-- Küfürlü cümle samimi bir şaka mı (arkadaş + dostça bir niyet, hakaret/tehdit yok)?
+local function isBanter(ctx, a)
+    local P = Config.Profanity or {}
+    if P.FriendlyBanter == false then return false end
+    if not SC.StageAtLeast(ctx.rel.stage, 'friend') then return false end
+    if (a.scores.insult or 0) >= 1.5 or (a.scores.threat or 0) > 0 then return false end
+    for id, sc in pairs(a.scores) do
+        if FRIENDLY[id] and sc >= 1.0 then return true, id end
+    end
+    -- "lan naber", "amk ne yapıyon" gibi kısa ve yöneltilmemiş cümleler
+    return #a.tokens <= 4 and not hasToken(a.tokens, 'sen', 'seni', 'sana', 'senin', 'sizi', 'anani')
+end
+
+handlers.swear = function(ctx, a, out, vars)
+    local P = Config.Profanity or {}
+    local rel, r, c = ctx.rel, ctx.r, ctx.c
+    if P.Enabled == false then return handlers.insult(ctx, a, out, vars) end
+    local banter, friendlyIntent = isBanter(ctx, a)
+    if banter then
+        ctx.intentOverride = 'banter'
+        out.topic = 'mood'
+        local tone = Dialogue.Tone(r)
+        local sub = rel.stage == 'lover' and 'lover' or ((tone == 'shy' or tone == 'formal') and 'shy' or (Dialogue.Argo(r) and 'argo' or 'default'))
+        out.say('banter', sub)
+        if friendlyIntent == 'how_are_you' or friendlyIntent == 'greet' then ctx.c.backIntent = 'how_are_you' end
+        return
+    end
+    c.swears = (c.swears or 0) + 1
+    out.dAff = out.dAff - 6
+    out.dTrust = out.dTrust - 3
+    if P.Remember ~= false then
+        out.memories[#out.memories + 1] = {
+            text = L('mem_cursed', ctx.addr ~= '' and ctx.addr or L('ctx_this_person')), importance = 5, type = 'event', valence = -1,
+            shareable = true, data = { code = 'cursed' },
+        }
+    end
+    out.emotion = 'angry'
+    local tone = Dialogue.Tone(r)
+    if c.swears >= (P.MaxBeforeLeave or 3) and ctx.channel == 'talk' then
+        out.say('swear_leave', (tone == 'shy' or tone == 'formal') and tone or nil)
+        out.actions[#out.actions + 1] = { type = 'end_conversation' }
+        return
+    end
+    local g = Dialogue.StageGroup(rel.stage)
+    if P.SwearBack == false or tone == 'shy' or tone == 'formal' then
+        out.emotion = tone == 'shy' and 'sad' or 'angry'
+        return out.say('swear_back', tone == 'shy' and 'shy' or 'formal')
+    end
+    if g == 'cold' then return out.say('swear_back', 'cold') end
+    if g == 'friend' then return out.say('swear_back', 'friend') end
+    return out.say('swear_back', (tone == 'grumpy' or Dialogue.Argo(r)) and 'grumpy' or (tone == 'warm' and 'warm' or 'default'))
+end
+
+-- =====================================================================
+-- MESLEK HİZMETLERİ
+-- =====================================================================
+local function serviceAllowed(ctx, strictDuty)
+    local onDuty = SC.Jobs.OnDuty(ctx.r)
+    if onDuty then return true, false end
+    if not strictDuty and SC.StageAtLeast(ctx.rel.stage, 'friend') then return true, true end
+    return false
+end
+
+local function orderFlow(ctx, a, out, vars, menu)
+    local item = SC.Jobs.FindItem(menu, a.tokens)
+    vars.menu = SC.Jobs.MenuText(menu)
+    if not item then
+        ctx.c.expect = { kind = 'order' }
+        return out.say('order', (a.best == 'order' and #a.tokens >= 2) and 'unknown' or 'ask')
+    end
+    if ctx.serviceBlocked then return out.say('order', 'cooldown') end
+    local price = SC.Jobs.Price(ctx.r, item, ctx.rel)
+    vars.item = SC.Dialogue.Lowerfirst(item.label)
+    vars.price = tostring(price) .. '$'
+    if price > 0 and ctx.money and ctx.money < price then return out.say('order', 'nomoney') end
+    vars.price_text = price > 0 and L('price_text', price) or L('price_free')
+    out.actions[#out.actions + 1] = { type = 'service', svc = 'order', item = item.key, price = price }
+    out.animation = 'give'
+    out.emotion = 'happy'
+    return out.say('order', 'served')
+end
+
+handlers.order = function(ctx, a, out, vars)
+    local menu = SC.Jobs.Menu(ctx.r)
+    if not menu then return out.say('order', 'noservice') end
+    if ctx.channel ~= 'talk' then return out.say('cmd_refuse', 'sms') end
+    local ok = serviceAllowed(ctx)
+    if not ok then return out.say('order', 'notwork') end
+    return orderFlow(ctx, a, out, vars, menu)
+end
+
+handlers.ask_menu = function(ctx, a, out, vars)
+    local menu = SC.Jobs.Menu(ctx.r)
+    if not menu then return out.say('ask_menu', 'none') end
+    if not serviceAllowed(ctx) then return out.say('order', 'notwork') end
+    vars.menu = SC.Jobs.MenuText(menu)
+    ctx.c.expect = { kind = 'order' }
+    return out.say('ask_menu', 'default')
+end
+
+handlers.ask_heal = function(ctx, a, out, vars)
+    local r = ctx.r
+    local medic = SC.Jobs.HasService(r, 'heal')
+    if not medic then
+        out.say('heal', 'notmedic')
+        local adv = SC.Jobs.HealthAdvice(a.norm, false)
+        if adv then out.sayList(adv) end
+        return
+    end
+    if ctx.channel ~= 'talk' then
+        local adv = SC.Jobs.HealthAdvice(a.norm, true)
+        if adv then return out.sayList(adv) end
+        return out.say('health_general')
+    end
+    if ctx.playerHp and ctx.playerHp >= 195 then return out.say('heal', 'healthy') end
+    local ok, offduty = serviceAllowed(ctx)
+    if offduty and (Config.JobServices or {}).OffDutyHeal == false then ok = false end
+    if not ok then return out.say('heal', 'notwork') end
+    if ctx.healBlocked then return out.say('heal', 'cooldown') end
+    local price = SC.Jobs.Price(r, { price = (Config.JobServices or {}).HealPrice or 0 }, ctx.rel)
+    vars.price = tostring(price) .. '$'
+    if price > 0 and ctx.money and ctx.money < price then return out.say('heal', 'nomoney') end
+    out.actions[#out.actions + 1] = { type = 'service', svc = 'heal', offduty = offduty, price = price }
+    out.animation = 'none'
+    return out.say('heal', offduty and 'offduty' or 'start')
+end
+
+handlers.ask_health = function(ctx, a, out, vars)
+    local medic = SC.Jobs.HasService(ctx.r, 'heal')
+    local adv = SC.Jobs.HealthAdvice(a.norm, medic)
+    out.topic = 'health'
+    if adv then return out.sayList(adv) end
+    if medic then return out.sayList((SC.Jobs.Get('medical') or {}).tips or {}) end
+    return out.say('health_general')
+end
+
+handlers.ask_repair = function(ctx, a, out, vars)
+    local r = ctx.r
+    if not SC.Jobs.HasService(r, 'repair') then
+        if SC.Jobs.Category(r) then return out.say('repair', 'notmech') end
+        return out.say('repair', 'notmech')
+    end
+    if ctx.channel ~= 'talk' then
+        local qa = SC.Jobs.MatchQA(a, ctx.r)
+        if qa and qa.cat.id == 'mechanic' then return out.sayList(qa.entry.lines) end
+        return out.say('cmd_refuse', 'sms')
+    end
+    local veh = ctx.meta and ctx.meta.veh
+    if not veh then return out.say('repair', 'novehicle') end
+    local ok, offduty = serviceAllowed(ctx)
+    if not ok then return out.say('order', 'notwork') end
+    if ctx.repairBlocked then return out.say('repair', 'cooldown') end
+    local price = SC.Jobs.Price(r, { price = (Config.JobServices or {}).RepairPrice or 0 }, ctx.rel)
+    vars.price = tostring(price) .. '$'
+    if price > 0 and ctx.money and ctx.money < price then return out.say('repair', 'nomoney') end
+    out.actions[#out.actions + 1] = { type = 'service', svc = 'repair', veh = veh, price = price }
+    if offduty then out.say('repair', 'offduty') end
+    return out.say('repair', 'start')
+end
+
+handlers.ask_expertise = function(ctx, a, out, vars)
+    local tip = SC.Jobs.Tip(ctx.r)
+    out.topic = 'job'
+    if not tip then return out.say('ask_expertise', 'none') end
+    vars.tip = tip
+    return out.say('ask_expertise', 'default')
+end
+
+handlers.job_q = function(ctx, a, out, vars)
+    local qa = ctx.jobqa
+    out.topic = 'job'
+    if not qa then return handlers.fallback(ctx, a, out, vars) end
+    local mine = SC.Jobs.Category(ctx.r)
+    if mine and mine.id == qa.cat.id then return out.sayList(qa.entry.lines) end
+    -- herkesin bilebileceği sağlık konuları dışında başka mesleğe yönlendirir
+    local adv = qa.cat.id == 'medical' and SC.Jobs.HealthAdvice(a.norm, false)
+    if adv then return out.sayList(adv) end
+    vars.cat = qa.cat.askLabel or ''
+    return out.say('job_q_other')
 end
 
 handlers.laugh = function(ctx, a, out) return out.say('laugh') end
@@ -1595,7 +2152,12 @@ handlers.no = function(ctx, a, out)
 end
 
 handlers.goodbye = function(ctx, a, out)
-    out.say('goodbye')
+    if Dialogue.Argo(ctx.r) and SC.StageAtLeast(ctx.rel.stage, 'friend') and ctx.rel.stage ~= 'lover'
+        and (Config.Profanity or {}).FriendlyBanter ~= false and math.random() < 0.4 then
+        out.say('goodbye_banter')
+    else
+        out.say('goodbye')
+    end
     if ctx.channel == 'talk' then out.actions[#out.actions + 1] = { type = 'end_conversation' } end
 end
 
@@ -1734,6 +2296,9 @@ end
 -- =====================================================================
 -- BEKLENEN CEVAPLAR (sakin bir şey sorduysa)
 -- =====================================================================
+
+-- Sakinin oyuncu hakkında sorduğu, cevabı serbest metin olarak hatırlanan sorular
+local ABOUT_PLAYER = { dream = true, family = true, food = true, music = true, pet = true, city = true }
 
 -- Bekleyen soruya verilen cevabı işle. true dönerse cevap üretilmiştir
 local function handleExpectation(ctx, a, out, vars)
@@ -1892,6 +2457,46 @@ local function handleExpectation(ctx, a, out, vars)
             meetFlow(ctx, a, out, vars, false)
             return true
         end
+    elseif ABOUT_PLAYER[e.kind] then
+        -- sakinin sorduğu "senin hayalin ne?" gibi sorular: cevabı hatırlar ve tepki verir
+        if not strongOther and not notAnswer and #a.tokens >= 1 then
+            local value = Utils.Truncate(Utils.Trim((ctx.text or ''):gsub('[%.!%?]+$', '')), 60)
+            out.rel.facts = out.rel.facts or {}
+            out.rel.facts[e.kind] = value
+            vars['fact_' .. e.kind] = value
+            out.topic = 'p' .. e.kind
+            out.memories[#out.memories + 1] = {
+                text = L('mem_player_fact', ctx.addr ~= '' and ctx.addr or L('ctx_this_person'), L('fact_' .. e.kind), value),
+                importance = 3, type = 'conversation', data = { fact = e.kind, value = value },
+            }
+            out.say('player_' .. e.kind)
+            out.dAff = out.dAff + 1
+            return true
+        end
+    elseif e.kind == 'ride' then
+        if a.best == 'yes' or (not strongOther and hasToken(a.tokens, 'olur', 'tamam', 'evet', 'hadi', 'tabii', 'tabi')) then
+            if rideLine(ctx, out) then
+                command(out, 'ride', {})
+                out.emotion = 'happy'
+                out.say('cmd_ride', 'yes')
+            end
+            return true
+        end
+        if a.best == 'no' then
+            out.say('no_q')
+            return true
+        end
+    elseif e.kind == 'order' then
+        local menu = SC.Jobs.Menu(ctx.r)
+        if menu and SC.Jobs.FindItem(menu, a.tokens) then
+            handlers.order(ctx, a, out, vars)
+            return true
+        end
+    elseif e.kind == 'player_secret' then
+        if not notAnswer and #a.tokens >= 2 and a.best ~= 'no' and a.best ~= 'dont_know' then
+            Dialogue.StoreSecret(ctx, out, ctx.text or '')
+            return true
+        end
     end
     return false
 end
@@ -1902,7 +2507,43 @@ local function maybeAsk(ctx, out, intent, parts)
     if c.expect or out.tail or NO_ASK[intent] or #parts == 0 or #parts > 2 or #out.actions > 0 or c.lastWasQuestion then return end
     if tostring(parts[#parts]):find('%?%s*$') then return end
     if Dialogue.StageGroup(rel.stage) == 'cold' then return end
-    if (c.playerMsgs or 0) < 2 or (c.npcQs or 0) >= 3 then return end
+    if (c.playerMsgs or 0) < 2 or (c.npcQs or 0) >= (Config.Dialogue.MaxNpcQuestions or 5) then return end
+    -- arkadaşına arabayla tur teklifi (arabası yakındaysa ve meşgul değilse)
+    if ctx.channel == 'talk' and ctx.carNearby and not c.rideOffered and SC.StageAtLeast(rel.stage, Config.Actions.MinStage.ride or 'friend')
+        and not (SC.Activities[r.state.activity] or {}).busy and math.random() < 0.12 then
+        c.rideOffered = true
+        if out.sayList(D.Lines.ride_offer.default) then c.expect = { kind = 'ride' } end
+        return
+    end
+    -- yakın arkadaşa kendiliğinden bir sır açma
+    local need = secretStage(r)
+    if need and SC.StageAtLeast(rel.stage, need) and not c.secretShared and math.random() < 0.08 then
+        local list = Dialogue.Secrets(r)
+        local told = math.floor(tonumber((rel.facts or {}).secrets_n) or 0)
+        if list[told + 1] then
+            c.secretShared = true
+            out.push(L('secret_intro'))
+            out.push(list[told + 1])
+            out.rel.facts = out.rel.facts or {}
+            out.rel.facts.secrets_n = told + 1
+            out.topic = 'secret'
+            return
+        end
+    end
+    -- başından geçen bir şeyi anlatma
+    if not c.storyTold or (c.playerMsgs or 0) - c.storyTold >= 6 then
+        local sc = (Config.Dialogue.StoryChance or 0.18) * (Dialogue.Talkative(r) and 1.5 or 1.0) * (Dialogue.Tone(r) == 'shy' and 0.5 or 1.0)
+        if Dialogue.StageGroup(rel.stage) ~= 'stranger' and math.random() < sc then
+            local story = SC.Jobs.Story(r)
+            if story and not c.used[story] then
+                c.used[story] = true
+                c.storyTold = c.playerMsgs or 0
+                out.push(story)
+                out.topic = 'story'
+                return
+            end
+        end
+    end
     local chance = Config.Dialogue.NpcQuestionChance or 0.22
     if Dialogue.Talkative(r) then chance = chance * 1.7 end
     local tone = Dialogue.Tone(r)
@@ -1986,10 +2627,25 @@ function Dialogue.Respond(ctx, text)
 
     local intent = a.best
     local g = Dialogue.StageGroup(rel.stage)
+    ctx.intentOverride = nil
+
+    -- meslek sorusu ("yağ ne zaman değişir?", "ilk yardım nasıl yapılır?")
+    if not c.hostage and SC.Jobs then
+        local qa = SC.Jobs.MatchQA(a, r)
+        if qa and qa.score >= 2.2 and (not intent or qa.score > a.score or intent == 'ask_advice' or intent == 'fallback') then
+            ctx.jobqa = qa
+            intent = 'job_q'
+        end
+    end
 
     if c.hostage then
         -- rehine: korku içinde, sadece birkaç şeye anlamlı cevap verir
         local key = HOSTAGE_KEYS[intent or '']
+        if intent == 'cmd_go_home' then
+            -- "serbestsin, gidebilirsin": rehine bırakılır
+            key = 'hostage_freed'
+            out.actions[#out.actions + 1] = { type = 'release_hostage' }
+        end
         if key then out.say(key) end
         if #parts == 0 then out.say('hostage_plead', r.override and r.override.mode or 'hold') end
         out.emotion = 'scared'
@@ -1999,11 +2655,15 @@ function Dialogue.Respond(ctx, text)
         if c.lastPlayerNorm and a.norm == c.lastPlayerNorm and #a.tokens >= 2 then out.say('repeat_same') end
         c.lastPlayerNorm = a.norm
 
-        -- meşgul (iş/yol) ve arkadaş değilse: birkaç cevaptan sonra işine döner
+        -- meşgul (iş/yol) ve arkadaş değilse: birkaç cevaptan sonra işine döner (müşteri işleri sayılmaz)
         local busyDef = SC.Activities[r.state.activity]
-        if ctx.channel == 'talk' and busyDef and busyDef.busy and g ~= 'friend' and intent ~= 'goodbye' then
+        if ctx.channel == 'talk' and busyDef and busyDef.busy and g ~= 'friend' and not BUSY_FREE[intent or ''] then
             c.busyTurns = (c.busyTurns or 0) + 1
-            if c.busyTurns > (Config.Dialogue.BusyMaxTurns or 3) then
+            local maxTurns = Config.Dialogue.BusyMaxTurns or 6
+            if c.busyTurns == maxTurns and r.state.activity ~= 'commute' then
+                -- son hakkında kibarca haber verir
+                out.sayTail('busy_later')
+            elseif c.busyTurns > maxTurns then
                 out.say('busy_end')
                 out.actions[#out.actions + 1] = { type = 'end_conversation' }
                 intent = 'busy_end'
@@ -2039,6 +2699,7 @@ function Dialogue.Respond(ctx, text)
                     end
                     handlers[intent](ctx, a, out, vars)
                     if D.Topics[intent] then c.topics[intent] = true end
+                    if ctx.intentOverride then intent = ctx.intentOverride end
                 else
                     intent = Dialogue.Contextual(ctx, a, out, vars)
                 end
@@ -2199,6 +2860,9 @@ function Dialogue.Greeting(ctx, info)
             key = 'greet_absence'
         elseif def and def.busy and g ~= 'friend' then
             key = 'greet_busy'
+        elseif g == 'friend' and rel.stage ~= 'lover' and Dialogue.Argo(r) and (Config.Profanity or {}).FriendlyBanter ~= false
+            and math.random() < ((Config.Profanity or {}).NpcBanterChance or 0.35) then
+            key = 'greet_banter'
         else
             key = 'greet'
         end
@@ -2288,7 +2952,7 @@ end
 -- Yakından geçerken selam baloncuğu
 function Dialogue.Ambient(r, rel)
     local g = Dialogue.StageGroup(rel.stage)
-    local key = g == 'friend' and 'ambient_friend' or (g == 'cold' and 'ambient_cold' or 'ambient_known')
+    local key = rel.stage == 'lover' and 'ambient_lover' or (g == 'friend' and 'ambient_friend' or (g == 'cold' and 'ambient_cold' or 'ambient_known'))
     local vars = Dialogue.Vars(r, rel)
     local line = pick(filterUsable(D.Lines[key] and D.Lines[key].default, vars))
     if not line then return nil end
@@ -2341,8 +3005,57 @@ function Dialogue.Suggestions(ctx)
         end
     end
     if SC.StageAtLeast(rel.stage, 'friend') then add(S.friend, 1) end
+    -- meslek hizmetleri (barmen: "Bir bira alabilir miyim?", hemşire: "Yaralıyım"...)
+    local sk = SC.Jobs and SC.Jobs.SuggestKey(ctx.r)
+    if sk and S.service and S.service[sk] and ctx.channel ~= 'sms' then add(S.service[sk], 1) end
+    if ctx.channel ~= 'sms' and SC.StageAtLeast(rel.stage, Config.Actions.MinStage.follow_player or 'friend') and S.friend_cmds then
+        local cmds = {}
+        for _, x in ipairs(S.friend_cmds) do cmds[#cmds + 1] = x end
+        add({ cmds[math.random(#cmds)] }, 1)
+    end
+    if rel.stage == 'lover' then add(S.lover, 1) end
     add(S.bye)
     return out
+end
+
+-- Oyuncu uzun süre susunca sakin kendiliğinden söz alır: bir soru sorar, bir şey anlatır ya da dürter
+function Dialogue.Nudge(ctx)
+    local r, rel, c = ctx.r, ctx.rel, ctx.c
+    c.used = c.used or {}
+    local vars = Dialogue.Vars(r, rel)
+    local g = Dialogue.StageGroup(rel.stage)
+    local line
+    if g ~= 'cold' and not c.expect then
+        local facts = rel.facts or {}
+        c.askedKinds = c.askedKinds or {}
+        local options = {}
+        for _, q in ipairs(D.NpcQuestions or {}) do
+            local f = q.fact and facts[q.fact]
+            local known = f ~= nil and (type(f) ~= 'table' or #f > 0)
+            if not known and not c.askedKinds[q.kind] and (not q.minStage or SC.StageAtLeast(rel.stage, q.minStage)) then
+                options[#options + 1] = q
+            end
+        end
+        if #options > 0 and math.random() < 0.6 then
+            local q = options[math.random(#options)]
+            line = pick(filterUsable(q.lines, vars), nil, c.used)
+            if line then
+                c.askedKinds[q.kind] = true
+                c.expect = { kind = q.kind }
+            end
+        elseif g ~= 'stranger' then
+            local story = SC.Jobs.Story(r)
+            if story and not c.used[story] then
+                line = story
+                c.lastTopic = 'story'
+            end
+        end
+    end
+    line = line or pick(filterUsable(Dialogue.Bucket('nudge', r, rel.stage), vars), nil, c.used) or '...'
+    c.used[line] = true
+    c.lastWasQuestion = line:find('%?%s*$') ~= nil
+    local emotion = g == 'cold' and 'angry' or 'neutral'
+    return Dialogue.Capitalize(Dialogue.Fill(line, vars)), emotion
 end
 
 -- Konuşma sonu özeti (anı)
@@ -2365,14 +3078,18 @@ end
 
 -- Yönetim paneli: yan etkisiz test (history: aynı konuşmanın önceki cümleleri — bağlam testi için)
 function Dialogue.Test(r, text, stage, playerName, state)
+    stage = stage or 'stranger'
+    local order = SC.StageOrder[stage] or 0
     local rel = {
-        stage = stage or 'stranger', familiarity = 30, affinity = 10, trust = 20, times_met = 2, meet_days = 1,
-        name_known = SC.StageAtLeast(stage or 'stranger', 'acquaintance'), char_name = playerName or 'Test Oyuncu',
-        phone_known = false, facts = {},
+        stage = stage, familiarity = order >= 1 and 30 + order * 15 or 5, affinity = order >= 0 and 10 + order * 20 or order * 40,
+        trust = order >= 0 and 20 + order * 18 or 5, times_met = order >= 1 and 3 or 1, meet_days = order >= 1 and order * 2 or 1,
+        name_known = SC.StageAtLeast(stage, 'acquaintance'), char_name = playerName or 'Test Oyuncu',
+        phone_known = false, facts = { lover = stage == 'lover' or nil, talks = order >= 1 and 2 or 0 },
     }
     local c = type(state) == 'table' and state or {}
     c.playerMsgs = (c.playerMsgs or 0) + 1
-    local ctx = { r = r, rel = rel, c = c, cid = nil, channel = 'talk', playerFirst = firstName(playerName or 'Test'), dry = true }
+    local ctx = { r = r, rel = rel, c = c, cid = nil, channel = 'talk', playerFirst = firstName(playerName or 'Test'), dry = true,
+        meta = type(c.testMeta) == 'table' and c.testMeta or {}, carNearby = r.vehicle ~= nil, money = 1000, playerHp = 150 }
     local res = Dialogue.Respond(ctx, text)
     local a = res.analysis
     local top = {}

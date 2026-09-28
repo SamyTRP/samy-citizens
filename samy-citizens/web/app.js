@@ -445,7 +445,7 @@ function formModal(title, fields) {
     const inputs = {};
     const form = el('div', { class: 'form' });
     for (const f of fields) {
-      inputs[f.key] = inp(f.value, { type: f.type || 'text' });
+      inputs[f.key] = f.type === 'checkbox' ? el('input', { type: 'checkbox', checked: !!f.value }) : inp(f.value, { type: f.type || 'text' });
       form.appendChild(field(f.label, inputs[f.key], 'span2'));
     }
     const close = (v) => { back.remove(); resolve(v); };
@@ -455,7 +455,7 @@ function formModal(title, fields) {
         el('button', {
           class: 'primary', text: t('save'), onclick: () => {
             const out = {};
-            for (const f of fields) out[f.key] = inputs[f.key].value;
+            for (const f of fields) out[f.key] = f.type === 'checkbox' ? inputs[f.key].checked : inputs[f.key].value;
             close(out);
           },
         }))));
@@ -634,7 +634,60 @@ const Admin = {
       el('b', { text: isDraft ? t('draft_title') : t('new_resident') }));
     const body = $('ad-body');
     body.innerHTML = '';
+    // kalıptan oluştur: arketip + cinsiyet seç -> taslak form dolar, düzenleyip kaydedersin
+    const presets = this.boot.presets || [];
+    if (presets.length) {
+      const pSel = sel([{ value: '', label: t('preset_random') }].concat(presets.map((p) => ({ value: p.id, label: p.label }))), (data && data.preset) || '');
+      const gSel = sel([{ value: '', label: t('gender_any') }, { value: 'male', label: t('gender_male') }, { value: 'female', label: t('gender_female') }], '');
+      body.appendChild(el('div', { class: 'preset-bar' },
+        el('b', { text: t('preset_title') }), pSel, gSel,
+        el('button', {
+          class: 'primary small', text: t('btn_from_preset'), onclick: async () => {
+            const d = await this.call('generate', { preset: pSel.value || undefined, gender: gSel.value || undefined });
+            if (d) this.residentEditor(d, true);
+          },
+        }),
+        el('span', { class: 'muted', text: t('preset_hint') })));
+    }
     this.residentForm(body, data || { enabled: true, gender: 'male', age: 30, personality: {}, job: { workdays: [1, 2, 3, 4, 5] } }, true);
+  },
+
+  // Virgüllü alan için hazır seçenek düğmeleri (tıkla: ekle / çıkar)
+  chipPicker(input, list) {
+    const box = el('div', { class: 'chips small' });
+    const cur = () => input.value.split(',').map((s) => s.trim()).filter(Boolean);
+    const chips = [];
+    const sync = () => { const v = cur(); for (const [w, c] of chips) c.classList.toggle('on', v.includes(w)); };
+    for (const w of list || []) {
+      const c = el('span', { class: 'chip', text: w });
+      c.addEventListener('click', () => {
+        let v = cur();
+        if (v.includes(w)) v = v.filter((x) => x !== w); else v.push(w);
+        input.value = v.join(', ');
+        sync();
+      });
+      chips.push([w, c]);
+      box.appendChild(c);
+    }
+    input.addEventListener('input', sync);
+    sync();
+    return box;
+  },
+
+  // Hazır cümle seçici: seçilen cümle alana yazılır (append: yeni satır olarak eklenir)
+  linePicker(target, list, append) {
+    if (!list || !list.length) return null;
+    const s = sel([{ value: '', label: t('pick_preset') }].concat(list.map((x) => ({ value: x, label: x.length > 70 ? x.slice(0, 67) + '…' : x }))), '', { class: 'picker' });
+    s.addEventListener('change', () => {
+      if (!s.value) return;
+      if (append && target.value.trim()) {
+        if (!target.value.split('\n').includes(s.value)) target.value = target.value.trim() + '\n' + s.value;
+      } else {
+        target.value = s.value;
+      }
+      s.value = '';
+    });
+    return s;
   },
 
   residentForm(root, d, isNew) {
@@ -657,10 +710,23 @@ const Admin = {
     f.fears = inp(p.fears);
     f.backstory = el('textarea', { value: d.backstory || '' });
     f.backstory.style.minHeight = '90px';
+    const pools = this.boot.pools || {};
     const tp = d.topics || {};
     const TOPIC_KEYS = ['job', 'work_opinion', 'family', 'origin', 'dream', 'food', 'music', 'secret'];
     f.topics = {};
-    for (const k of TOPIC_KEYS) f.topics[k] = el('textarea', { value: tp[k] || '', maxlength: 400, placeholder: t('ph_topic_' + k) });
+    for (const k of TOPIC_KEYS) f.topics[k] = el('textarea', { value: tp[k] || '', maxlength: k === 'secret' ? 1500 : 400, placeholder: t('ph_topic_' + k) });
+    f.topics.secret.style.minHeight = '80px';
+    const TOPIC_POOL = { work_opinion: 'work_opinion', family: 'family', dream: 'dream', food: 'food', music: 'music', secret: 'secret' };
+    const st = d.settings || {};
+    const post = st.post || {};
+    f.postOn = el('input', { type: 'checkbox', checked: !!post.enabled });
+    f.postPos = this.coordsRow(t('f_post_pos'), post.enabled ? { x: post.x, y: post.y, z: post.z, w: post.h } : null);
+    f.postScenario = sel((this.boot.scenarios || []).map((s) => ({ value: s, label: s })), post.scenario || 'WORLD_HUMAN_GUARD_STAND');
+    f.postFrom = inp(post.from, { placeholder: t('ph_post_from') });
+    f.postTo = inp(post.to, { placeholder: t('ph_post_to') });
+    f.postLabel = inp(post.label, { placeholder: t('loc_post_default') });
+    f.secretStage = sel(['friend', 'close_friend', 'lover', 'never'].map((s) => ({ value: s, label: s === 'never' ? t('secret_never') : t('stage_' + s) })), st.secretStage || 'close_friend');
+    f.romance = el('input', { type: 'checkbox', checked: st.romance !== false });
     f.jobTitle = inp(j.title);
     f.workplace = sel(this.locOptions(true), j.workplaceId || '');
     f.shiftStart = inp(j.shift ? j.shift.start : '', { placeholder: '09:00' });
@@ -716,15 +782,20 @@ const Admin = {
       field(t('f_id'), f.id), field(t('f_firstname'), f.firstname), field(t('f_lastname'), f.lastname), field(t('f_age'), f.age),
       field(t('f_gender'), f.gender), field(t('f_model'), el('div', { class: 'inline' }, f.model, el('button', { class: 'small', text: '?', onclick: checkModel }), modelCheck)),
       field(t('f_phone'), f.phone),
-      field(t('f_traits'), f.traits, 'span2'), field(t('f_hobbies'), f.hobbies, 'span2'),
-      field(t('f_speech'), f.speech, 'span4'),
-      field(t('f_values'), f.values, 'span2'), field(t('f_fears'), f.fears, 'span2'),
+      field(t('f_traits'), el('div', {}, f.traits, this.chipPicker(f.traits, pools.traits)), 'span2'),
+      field(t('f_hobbies'), el('div', {}, f.hobbies, this.chipPicker(f.hobbies, pools.hobbies)), 'span2'),
+      field(t('f_speech'), el('div', {}, f.speech, this.linePicker(f.speech, pools.speech)), 'span4'),
+      field(t('f_values'), el('div', {}, f.values, this.linePicker(f.values, pools.values)), 'span2'),
+      field(t('f_fears'), el('div', {}, f.fears, this.linePicker(f.fears, pools.fears)), 'span2'),
       field(t('f_backstory'), f.backstory, 'span4'));
     root.appendChild(el('div', { class: 'section-title', text: t('sec_identity') }));
     root.appendChild(form);
 
     const formT = el('div', { class: 'form' });
-    for (const k of Object.keys(f.topics)) formT.append(field(t('f_topic_' + k), f.topics[k], 'span2'));
+    for (const k of Object.keys(f.topics)) {
+      const picker = TOPIC_POOL[k] ? this.linePicker(f.topics[k], pools[TOPIC_POOL[k]], k === 'secret') : null;
+      formT.append(field(t('f_topic_' + k), picker ? el('div', {}, f.topics[k], picker) : f.topics[k], k === 'secret' ? 'span4' : 'span2'));
+    }
     root.appendChild(el('div', { class: 'section-title', text: t('sec_topics') }));
     root.appendChild(el('div', { class: 'muted', text: t('topics_help') }));
     root.appendChild(formT);
@@ -745,8 +816,18 @@ const Admin = {
     root.appendChild(el('div', { class: 'section-title', text: t('sec_social') }));
     const form4 = el('div', { class: 'form' });
     form4.append(field(t('f_favorites'), favBox, 'span4'), field(t('f_acquaintances'), f.acq, 'span4'),
-      field(t('f_enabled'), f.enabled), field(t('f_reset_look'), f.resetLook));
+      field(t('f_enabled'), f.enabled), field(t('f_reset_look'), f.resetLook),
+      field(t('f_secret_stage'), f.secretStage), field(t('f_romance'), f.romance));
     root.appendChild(form4);
+
+    // sabit görev noktası: sakini bir yerde "özel görevli" olarak diker (rutinini ezer)
+    root.appendChild(el('div', { class: 'section-title', text: t('sec_post') }));
+    root.appendChild(el('div', { class: 'muted', text: t('post_help') }));
+    const form5 = el('div', { class: 'form' });
+    form5.append(field(t('f_post_on'), f.postOn), field(t('f_post_label'), el('div', {}, f.postLabel, this.linePicker(f.postLabel, pools.post_labels)), 'span2'),
+      f.postPos.node, field(t('f_post_scenario'), f.postScenario, 'span2'),
+      field(t('f_post_from'), f.postFrom), field(t('f_post_to'), f.postTo));
+    root.appendChild(form5);
 
     const save = async () => {
       const payload = {
@@ -760,6 +841,12 @@ const Admin = {
         },
         backstory: f.backstory.value.trim(),
         topics: Object.fromEntries(Object.entries(f.topics).map(([k, n]) => [k, n.value.trim()]).filter(([, v]) => v)),
+        settings: {
+          secretStage: f.secretStage.value,
+          romance: f.romance.checked ? undefined : false,
+          post: f.postOn.checked ? Object.assign({ enabled: true, scenario: f.postScenario.value, from: f.postFrom.value.trim() || undefined, to: f.postTo.value.trim() || undefined, label: f.postLabel.value.trim() || undefined },
+            (() => { const p = f.postPos.get(); return p ? { x: p.x, y: p.y, z: p.z, h: p.w } : {}; })()) : undefined,
+        },
         job: {
           title: f.jobTitle.value.trim(), workplaceId: f.workplace.value || undefined,
           shift: (parseTime(f.shiftStart.value) !== null && parseTime(f.shiftEnd.value) !== null) ? { start: f.shiftStart.value.trim(), end: f.shiftEnd.value.trim() } : undefined,
@@ -773,6 +860,7 @@ const Admin = {
         resetAppearance: f.resetLook.checked,
       };
       if (!payload.id || !/^[a-z0-9_]+$/.test(payload.id)) { toast(t('err_id'), 'bad'); return; }
+      if (payload.settings.post && payload.settings.post.x === undefined) { toast(t('err_post'), 'bad'); return; }
       const ok = await this.call('saveResident', payload);
       if (ok) {
         toast(t('saved'), 'good');
@@ -880,6 +968,7 @@ const Admin = {
                 { key: 'affinity', label: t('col_aff'), value: r.affinity, type: 'number' },
                 { key: 'trust', label: t('col_trust'), value: r.trust, type: 'number' },
                 { key: 'meet_days', label: t('col_meetdays'), value: r.meetDays, type: 'number' },
+                { key: 'lover', label: t('col_lover'), value: r.lover, type: 'checkbox' },
               ]);
               if (!vals) return;
               const res = await this.call('setRelationship', { npcId: id, citizenid: r.citizenid, fields: vals });
@@ -1216,7 +1305,7 @@ const Admin = {
     top.append(el('b', { text: t('tab_dialogue') }), el('div', { class: 'grow' }), el('span', { class: 'muted', text: t('dlg_help') }));
     const body = $('ad-body');
     const who = sel(list.map((r) => ({ value: r.id, label: `${r.name} (${r.job})` })), this.dlgWho || (list[0] && list[0].id));
-    const stages = ['stranger', 'acquaintance', 'friend', 'close_friend', 'cold', 'enemy'];
+    const stages = ['stranger', 'acquaintance', 'friend', 'close_friend', 'lover', 'cold', 'enemy'];
     const stage = sel(stages.map((s) => ({ value: s, label: t('stage_' + s) })), this.dlgStage || 'stranger');
     const text = inp('', { maxlength: 300, placeholder: t('dlg_placeholder') });
     const out = el('div');

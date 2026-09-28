@@ -41,6 +41,7 @@ local UPGRADE_COLUMNS = {
     { 'samy_citizens_relationships', 'facts', 'LONGTEXT NULL' },
     { 'samy_citizens_residents', 'acquaintances', 'LONGTEXT NULL' },
     { 'samy_citizens_residents', 'topics', 'LONGTEXT NULL' },
+    { 'samy_citizens_residents', 'settings', 'LONGTEXT NULL' },
     { 'samy_citizens_memories', 'data', 'TEXT NULL' },
 }
 
@@ -133,6 +134,7 @@ local function residentParams(r, phone)
         s(r.routine_id),
         s(phone),
         json.encode(r.topics or {}),
+        json.encode(r.settings or {}),
     }
 end
 
@@ -159,8 +161,8 @@ function DB.Seed()
             local phone = r.phone_number or genPhone(r.id, taken)
             MySQL.prepare.await([[INSERT IGNORE INTO samy_citizens_residents
                 (id, firstname, lastname, age, gender, model, appearance, voice_id, personality, backstory, job, home_id,
-                 vehicle, favorite_places, acquaintances, routine_id, phone_number, topics)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]], residentParams(r, phone))
+                 vehicle, favorite_places, acquaintances, routine_id, phone_number, topics, settings)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]], residentParams(r, phone))
         elseif r.topics then
             -- önceki sürümden kalan kayıtlara konuşma konularını ekle (elle düzenlenmişse dokunma)
             MySQL.prepare.await([[UPDATE samy_citizens_residents SET topics = ?
@@ -209,6 +211,7 @@ function DB.DecodeResident(row)
         favorite_places = Utils.JsonDecode(row.favorite_places) or {},
         acquaintances = Utils.JsonDecode(row.acquaintances) or {},
         topics = type(Utils.JsonDecode(row.topics)) == 'table' and Utils.JsonDecode(row.topics) or {},
+        settings = type(Utils.JsonDecode(row.settings)) == 'table' and Utils.JsonDecode(row.settings) or {},
         routine_id = nilIfEmpty(row.routine_id),
         phone_number = nilIfEmpty(row.phone_number),
         needs = Utils.JsonDecode(row.needs),
@@ -254,13 +257,14 @@ function DB.UpsertResident(r)
     params[#params + 1] = r.enabled == false and 0 or 1
     return MySQL.prepare.await([[INSERT INTO samy_citizens_residents
         (id, firstname, lastname, age, gender, model, appearance, voice_id, personality, backstory, job, home_id,
-         vehicle, favorite_places, acquaintances, routine_id, phone_number, topics, enabled)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         vehicle, favorite_places, acquaintances, routine_id, phone_number, topics, settings, enabled)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE firstname = VALUES(firstname), lastname = VALUES(lastname), age = VALUES(age),
         gender = VALUES(gender), model = VALUES(model), appearance = VALUES(appearance), voice_id = VALUES(voice_id),
         personality = VALUES(personality), backstory = VALUES(backstory), job = VALUES(job), home_id = VALUES(home_id),
         vehicle = VALUES(vehicle), favorite_places = VALUES(favorite_places), acquaintances = VALUES(acquaintances),
-        routine_id = VALUES(routine_id), phone_number = VALUES(phone_number), topics = VALUES(topics), enabled = VALUES(enabled)]], params)
+        routine_id = VALUES(routine_id), phone_number = VALUES(phone_number), topics = VALUES(topics), settings = VALUES(settings),
+        enabled = VALUES(enabled)]], params)
 end
 
 function DB.UpsertLocation(loc)

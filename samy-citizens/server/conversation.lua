@@ -72,7 +72,7 @@ end
 Convo.CheckRate = checkRate
 
 function Convo.IsSevere(text)
-    if not Config.Moderation.Enabled then return false end
+    if not Config.Moderation or not Config.Moderation.Enabled then return false end
     for _, w in ipairs(Config.Moderation.SevereWords or {}) do
         if Utils.ContainsPhrase(text, w) then return true end
     end
@@ -98,9 +98,28 @@ end
 -- Diyalog motoru bağlamı (konuşma tablosunun kendisi motorun durum tablosudur: expect, meet, topics...)
 local function dialogueCtx(r, c)
     return {
-        r = r, rel = c.rel, c = c, cid = c.citizenid, channel = 'talk',
+        r = r, rel = c.rel, c = c, cid = c.citizenid, channel = 'talk', src = c.src,
         playerFirst = c.charInfo and c.charInfo.firstname or nil,
+        meta = c.meta or {}, npcPos = c.npcPos, carNearby = c.carNearby, money = c.money, playerHp = c.playerHp,
+        serviceBlocked = c.serviceBlocked, healBlocked = c.healBlocked, repairBlocked = c.repairBlocked,
+        reportBlocked = c.reportBlocked, otherLovers = c.otherLovers, heardOf = c.heardOf,
     }
+end
+
+-- Her mesajdan önce: sunucuda doğrulanan dünya bilgisi (işaret, yakın araç, para, can...)
+local function refreshWorld(r, c, meta)
+    local src = c.src
+    c.meta = SC.Life.SanitizeMeta(src, r, meta)
+    c.npcPos = Spawner.GetPedCoords(r)
+    c.carNearby = SC.Life.CarNearby(r)
+    local okM, money = pcall(SC.Bridge.GetMoney, src, (Config.JobServices or {}).Account or 'cash')
+    c.money = okM and tonumber(money) or nil
+    local pped = GetPlayerPed(src)
+    c.playerHp = (pped and pped ~= 0) and GetEntityHealth(pped) or nil
+    c.serviceBlocked = SC.Life.Blocked('order', r, c.citizenid)
+    c.healBlocked = SC.Life.Blocked('heal', r, c.citizenid)
+    c.repairBlocked = SC.Life.Blocked('repair', r, c.citizenid)
+    c.reportBlocked = SC.Life.ReportBlocked(r)
 end
 
 local function clientPayload(r, c, text, emotion, extra)
@@ -171,15 +190,26 @@ lib.callback.register('samy-citizens:startConversation', function(src, netId)
         return false, L('err_npc_refuses')
     end
 
-    -- rehineyle konuşmak bir "görüşme" sayılmaz
-    local meetInfo = not hostage and SC.Rel.OnMeet(rel, charName) or nil
+    -- görüşme, oyuncu ilk kez bir şey söyleyince sayılır (paneli açıp kapatmak "tanışmak" değildir); rehine hiç sayılmaz
+    local meetInfo = not hostage and SC.Rel.MeetInfo(rel) or nil
     Sim.MarkInteracted(r)
     local c = {
         src = src, citizenid = cid, charName = charName, charInfo = charInfo,
         rel = rel, history = {}, startedAt = GetGameTimer(), startedAbs = Clock.Now(), lastActivity = GetGameTimer(),
         busy = false, meetInfo = meetInfo, playerMsgs = 0, negative = hostage, hostage = hostage,
-        place = r.state.locationId or r.state.toLocationId,
+        place = r.state.locationId or r.state.toLocationId, nudges = 0,
     }
+    if not hostage then
+        -- kıskançlık: oyuncunun başka sevgilisi var mı; tanışmadan önce hakkında bir şey duymuş mu
+        local R = Config.Romance or {}
+        if R.Enabled ~= false and not R.AllowMultiple and SC.StageAtLeast(rel.stage, 'friend') then
+            c.otherLovers = SC.Rel.LoversOf(cid, r.id)
+        end
+        if SC.Rel.Talks(rel) == 0 then
+            c.heardOf = MySQL.scalar.await([[SELECT 1 FROM samy_citizens_memories WHERE npc_id = ? AND citizenid = ?
+                AND type IN ('gossip', 'witnessed') AND archived = 0 LIMIT 1]], { r.id, cid }) ~= nil
+        end
+    end
     r.convo = c
     Convo.bySrc[src] = r.id
     Spawner.UpdateTask(r)
@@ -212,6 +242,7 @@ function Convo.End(r, reason)
         r.state.eta = r.state.eta + paused
     end
     SC.Rel.Touch(c.rel)
+    if c.playerMsgs >= 1 and not c.hostage then SC.Rel.MarkTalked(c.rel) end
     -- olumsuzluk olmadan en az 3 mesajlık sohbet ilişkiyi biraz güçlendirir
     if c.playerMsgs >= 3 and not c.negative and not c.hostage then
         local b = Config.Dialogue.GoodConversationBonus or { 2, 1 }
@@ -254,7 +285,7 @@ end
 -- ---------------------------------------------------------------------
 -- Mesaj akışı
 -- ---------------------------------------------------------------------
-function Convo.HandlePlayerText(src, text)
+function Convo.HandlePlayerText(src, text, meta)
     local rid = Convo.bySrc[src]
     if not rid then return end
     local r = Sim.Residents[rid]
@@ -282,6 +313,9 @@ function Convo.HandlePlayerText(src, text)
     end
     c.lastActivity = GetGameTimer()
     c.playerMsgs = c.playerMsgs + 1
+    if c.playerMsgs == 1 and not c.hostage then
+        c.meetInfo = SC.Rel.OnMeet(c.rel, c.charName)
+    end
     if Convo.IsSevere(text) then
         Convo.Harassment(r, c, text)
         return
@@ -298,6 +332,7 @@ function Convo.HandlePlayerText(src, text)
     SC.Log.Conversation(r.id, c.citizenid, c.charName, 'talk', 'player', text)
     if Config.Conversation.ShowPlayerBubble then Convo.PlayerBubble(src, text) end
 
+    refreshWorld(r, c, meta)
     local res = SC.Dialogue.Respond(dialogueCtx(r, c), text)
     local tmin = Config.Dialogue.TypingDelayMs and Config.Dialogue.TypingDelayMs[1] or 600
     local tmax = Config.Dialogue.TypingDelayMs and Config.Dialogue.TypingDelayMs[2] or 2200
@@ -314,9 +349,9 @@ function Convo.HandlePlayerText(src, text)
     end)
 end
 
-RegisterNetEvent('samy-citizens:server:say', function(text)
+RegisterNetEvent('samy-citizens:server:say', function(text, meta)
     if type(text) ~= 'string' then return end
-    Convo.HandlePlayerText(source, text)
+    Convo.HandlePlayerText(source, text, meta)
 end)
 
 function Convo.ApplyTurn(r, c, res)
@@ -341,6 +376,11 @@ function Convo.ApplyTurn(r, c, res)
     local results = SC.Actions.Execute({
         r = r, src = c.src, citizenid = c.citizenid, rel = rel, channel = 'talk', charName = c.charName,
     }, res)
+    if stageChanged and rel.stage == 'lover' then
+        results.ui[#results.ui + 1] = { type = 'lover', text = L('ui_lover', r.firstname) }
+    elseif stageChanged and oldStage == 'lover' then
+        results.ui[#results.ui + 1] = { type = 'lover', text = L('ui_breakup', r.firstname) }
+    end
 
     c.history[#c.history + 1] = { role = 'npc', text = res.reply }
     local actionTypes = {}
@@ -359,7 +399,19 @@ function Convo.ApplyTurn(r, c, res)
         ui = results.ui,
     }))
 
-    if results.flee then
+    if results.releaseHostage then
+        SetTimeout(1500, function() if SC.Hostage.Is(r) then SC.Hostage.End(r, 'released') end end)
+    end
+    if results.command then
+        local src, cmd = c.src, results.command
+        SetTimeout(1800, function()
+            if r.convo == c then Convo.End(r, cmd.endReason or ('cmd_' .. tostring(cmd.cmd))) end
+            CreateThread(function()
+                local ok, err = pcall(SC.Life.Run, r, src, cmd)
+                if not ok then print(('^1[samy-citizens] komut hatası (%s): %s^7'):format(tostring(cmd.cmd), tostring(err))) end
+            end)
+        end)
+    elseif results.flee then
         local pped = GetPlayerPed(c.src)
         local from = (pped and pped ~= 0) and GetEntityCoords(pped) or (Spawner.GetPedCoords(r) or vector3(0.0, 0.0, 0.0))
         local src = c.src
@@ -394,6 +446,18 @@ function Convo.Tick()
             Convo.End(r, 'distance')
         elseif not c.busy and timer - c.lastActivity > (Config.Conversation.IdleTimeoutSec or 150) * 1000 then
             Convo.End(r, 'idle')
+        elseif not c.busy and not c.hostage and (c.nudges or 0) < (Config.Conversation.MaxNudges or 2)
+            and timer - c.lastActivity > (Config.Conversation.NudgeAfterSec or 25) * 1000 * ((c.nudges or 0) + 1) then
+            -- oyuncu sustu: sakin kendiliğinden söz alır (soru sorar, bir şey anlatır)
+            c.nudges = (c.nudges or 0) + 1
+            local ok, text, emotion = pcall(SC.Dialogue.Nudge, dialogueCtx(r, c))
+            if ok and text then
+                c.history[#c.history + 1] = { role = 'npc', text = text }
+                Convo.Bubble(r, text)
+                Spawner.SetEmotion(r, emotion or 'neutral')
+                Spawner.PlayGesture(r, 'talk')
+                TriggerClientEvent('samy-citizens:client:convoMessage', c.src, clientPayload(r, c, text, emotion))
+            end
         end
     end
 end

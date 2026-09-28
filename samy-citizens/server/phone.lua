@@ -338,7 +338,7 @@ function Phone.TryProactive(r)
     if #candidates == 0 then return end
     local pick = candidates[math.random(#candidates)]
     local rel = pick.rel
-    local text = SC.Actions.PickLine('sms_proactive'):gsub('%%place%%', Sim.LocationLabel(r.state.locationId or r.state.toLocationId))
+    local text = SC.Actions.PickLine(rel.stage == 'lover' and 'sms_proactive_lover' or 'sms_proactive'):gsub('%%place%%', Sim.LocationLabel(r.state.locationId or r.state.toLocationId))
     rel.proactive_count = rel.proactive_count + 1
     SC.Rel.MarkDirty(rel)
     Phone.SendToPlayer(r, rel.citizenid, rel.player_phone, text, pick.src)

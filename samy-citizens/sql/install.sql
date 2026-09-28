@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS `samy_citizens_residents` (
   `favorite_places` LONGTEXT NULL,
   `acquaintances` LONGTEXT NULL,
   `topics` LONGTEXT NULL,
+  `settings` LONGTEXT NULL,
   `routine_id` VARCHAR(64) NULL,
   `phone_number` VARCHAR(20) NULL,
   `needs` LONGTEXT NULL,

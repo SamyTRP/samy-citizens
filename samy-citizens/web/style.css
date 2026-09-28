@@ -190,6 +190,13 @@ input[type='checkbox'] { width: 16px; height: 16px; accent-color: var(--accent);
 .badge.stage-acquaintance { background: rgba(245, 184, 92, 0.18); color: #ffd79e; }
 .badge.stage-friend { background: rgba(61, 214, 198, 0.18); color: #98f0e6; }
 .badge.stage-close_friend { background: rgba(111, 210, 138, 0.2); color: #b7f5c7; }
+.badge.stage-lover { background: rgba(255, 120, 170, 0.22); color: #ffc2dc; }
+.preset-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 14px; padding: 10px 12px; border-radius: 10px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07); }
+.preset-bar select { width: auto; min-width: 150px; }
+.chips.small { margin-top: 6px; }
+.chips.small .chip { font-size: 11px; padding: 3px 8px; }
+select.picker { margin-top: 6px; font-size: 12px; opacity: 0.85; }
 
 .mood { width: 30px; height: 30px; flex: none; }
 .mood svg { width: 30px; height: 30px; }
@@ -386,3 +393,5 @@ table.grid tr:hover td { background: rgba(255, 255, 255, 0.03); }
 .modal { width: 460px; border-radius: 14px; background: linear-gradient(160deg, #222a37, #161b24); box-shadow: var(--shadow), var(--glass); padding: 18px; }
 .modal h3 { margin: 0 0 10px; font-size: 16px; }
 .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+/* hazır seçenekli alanlar: alan + altında seçici, tam genişlik */
+.f > div:not(.inline):not(.coords) > input, .f > div:not(.inline):not(.coords) > textarea, .f > div:not(.inline):not(.coords) > select.picker { width: 100%; display: block; box-sizing: border-box; }

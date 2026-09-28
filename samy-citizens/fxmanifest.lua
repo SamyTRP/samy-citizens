@@ -5,7 +5,7 @@ use_experimental_fxv2_oal 'yes'
 
 name 'samy-citizens'
 author 'samy'
-version '2.1.0'
+version '2.2.0'
 description 'Kendi hayatı olan, konuşabilen ve arkadaş olunabilen kalıcı sakin NPC sistemi (yapay zekâsız, kural tabanlı diyalog)'
 
 dependencies {
@@ -30,6 +30,9 @@ server_scripts {
     'data/routines.lua',
     'data/residents.lua',
     'data/dialogue.lua',
+    'data/dialogue_life.lua',
+    'data/jobs.lua',
+    'data/presets.lua',
     'bridge/qbx.lua',
     'bridge/qb.lua',
     'bridge/esx.lua',
@@ -41,6 +44,7 @@ server_scripts {
     'server/simulation.lua',
     'server/spawner.lua',
     'server/appointments.lua',
+    'server/jobs.lua',
     'server/dialogue.lua',
     'server/actions.lua',
     'server/conversation.lua',
@@ -48,6 +52,7 @@ server_scripts {
     'server/social.lua',
     'server/world.lua',
     'server/hostage.lua',
+    'server/life.lua',
     'server/admin.lua',
     'server/main.lua',
 }
@@ -58,6 +63,7 @@ client_scripts {
     'client/conversation.lua',
     'client/world.lua',
     'client/hostage.lua',
+    'client/life.lua',
     'client/phone.lua',
     'client/admin.lua',
     'client/debug.lua',

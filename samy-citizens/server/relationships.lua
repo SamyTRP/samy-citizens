@@ -56,6 +56,11 @@ function Rel.ComputeStage(r)
     local S = Config.Relationship.Stages
     if r.affinity <= S.enemy.maxAffinity then return 'enemy' end
     if r.affinity <= S.cold.maxAffinity then return 'cold' end
+    -- sevgili: sakinin teklifi kabul etmesiyle (facts.lover) başlar, sevgi/güven eşiğin altına inene kadar sürer
+    local LV = S.lover or { affinity = 25, trust = 20 }
+    if type(r.facts) == 'table' and r.facts.lover and r.affinity >= (LV.affinity or 25) and r.trust >= (LV.trust or 20) then
+        return 'lover'
+    end
     local st = 'stranger'
     if r.familiarity >= S.acquaintance.familiarity and r.times_met >= S.acquaintance.timesMet then
         st = 'acquaintance'
@@ -77,9 +82,16 @@ end
 local function refreshStage(row)
     local old = row.stage
     row.stage = Rel.ComputeStage(row)
+    -- sevgililer arası sevgi/güven çöktü: ilişki biter
+    if old == 'lover' and row.stage ~= 'lover' and type(row.facts) == 'table' and row.facts.lover then
+        row.facts.lover = nil
+        row.facts.ex = true
+        row.facts.broke_up_at = os.time()
+    end
     if SC.StageAtLeast(row.stage, 'acquaintance') then row.name_known = true end
     return old ~= row.stage, old
 end
+Rel.Refresh = refreshStage
 
 -- Günlük sayaçları sıfırla
 local function ensureDaily(row)
@@ -206,8 +218,27 @@ function Rel.AddFamiliarity(row, amount, bypassCap)
     return refreshStage(row)
 end
 
+-- Görüşmeyi saymadan önceki durum (konuşma açılışında selamı seçmek için; yan etkisiz)
+function Rel.MeetInfo(row)
+    local info = { firstMeeting = (row.times_met or 0) == 0, daysAway = 0, newDay = row.last_meet_day ~= SC.Clock.RelationshipDayKey() }
+    if (row.last_seen or 0) > 0 then info.daysAway = math.floor((os.time() - row.last_seen) / 86400) end
+    return info
+end
+
+-- Oyuncuyla gerçekten konuşuldu (en az bir mesaj). "Beni tanıyor musun?" buna bakar; sadece panel açıp kapatmak sayılmaz.
+function Rel.MarkTalked(row)
+    row.facts = type(row.facts) == 'table' and row.facts or {}
+    row.facts.talks = (tonumber(row.facts.talks) or 0) + 1
+    row.facts.last_talk = os.time()
+    Rel.MarkDirty(row)
+end
+
+function Rel.Talks(row)
+    return row and type(row.facts) == 'table' and (tonumber(row.facts.talks) or 0) or 0
+end
+
 --[[
-    Konuşma/buluşma başında çağrılır.
+    Konuşmada oyuncu ilk kez bir şey söyleyince (ya da buluşmada) çağrılır.
     dönüş: { firstMeeting = bool, daysAway = number, newDay = bool }
 ]]
 function Rel.OnMeet(row, charName)
@@ -304,7 +335,7 @@ end
 function Rel.CloseFriendsWithPhone(npcId)
     Rel.Flush(true)
     local rows = MySQL.query.await([[SELECT * FROM samy_citizens_relationships
-        WHERE npc_id = ? AND stage = 'close_friend' AND phone_known = 1]], { npcId }) or {}
+        WHERE npc_id = ? AND stage IN ('close_friend', 'lover') AND phone_known = 1]], { npcId }) or {}
     local out = {}
     for _, row in ipairs(rows) do
         local k = key(row.npc_id, row.citizenid)
@@ -328,6 +359,11 @@ function Rel.Set(npcId, cid, fields)
     end
     if fields.phone_known ~= nil then row.phone_known = fields.phone_known == true end
     if fields.nickname ~= nil then row.nickname = fields.nickname ~= '' and fields.nickname or nil end
+    if fields.lover ~= nil then
+        row.facts = type(row.facts) == 'table' and row.facts or {}
+        row.facts.lover = fields.lover == true or nil
+        if row.facts.lover then row.facts.lover_since = row.facts.lover_since or os.time() end
+    end
     row.familiarity = Utils.Clamp(row.familiarity, 0, 100)
     row.affinity = Utils.Clamp(row.affinity, -100, 100)
     row.trust = Utils.Clamp(row.trust, 0, 100)
@@ -346,5 +382,26 @@ function Rel.PublicView(row)
         trust = row.trust,
         phoneKnown = row.phone_known,
         nameKnown = row.name_known,
+        lover = row.stage == 'lover',
     }
+end
+
+-- Oyuncunun sevgilisi olan sakinler (kıskançlık için; thread içinden)
+function Rel.LoversOf(cid, exceptNpc)
+    local out, seen = {}, {}
+    for _, row in pairs(cache) do
+        if row.citizenid == cid and row.npc_id ~= exceptNpc and row.stage == 'lover' then
+            out[#out + 1] = row.npc_id
+            seen[row.npc_id] = true
+        end
+    end
+    local rows = MySQL.query.await([[SELECT npc_id FROM samy_citizens_relationships WHERE citizenid = ? AND stage = 'lover']], { cid }) or {}
+    for _, row in ipairs(rows) do
+        local cached = cache[key(row.npc_id, cid)]
+        if row.npc_id ~= exceptNpc and not seen[row.npc_id] and not (cached and cached.stage ~= 'lover') then
+            out[#out + 1] = row.npc_id
+            seen[row.npc_id] = true
+        end
+    end
+    return out
 end

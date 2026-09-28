@@ -44,6 +44,23 @@ function Bridge.GetMoney(src, account)
     return p.PlayerData.money[account or 'cash'] or 0
 end
 
+function Bridge.RemoveMoney(src, account, amount)
+    local p = getPlayer(src)
+    if not p or not p.Functions then return false end
+    return p.Functions.RemoveMoney(account or 'cash', amount, 'samy-citizens') ~= false
+end
+
+-- açlık / susuzluk (metadata 0-100)
+function Bridge.AddStatus(src, kind, amount)
+    local p = getPlayer(src)
+    if not p or not p.PlayerData or not p.Functions then return end
+    local md = p.PlayerData.metadata or {}
+    local key = kind == 'hunger' and 'hunger' or 'thirst'
+    p.Functions.SetMetaData(key, math.min(100, (tonumber(md[key]) or 50) + (amount or 25)))
+    local now = p.PlayerData.metadata or md
+    TriggerClientEvent('hud:client:UpdateNeeds', src, now.hunger, now.thirst)
+end
+
 function Bridge.GetSourceByCitizenId(cid)
     local p = QBCore.Functions.GetPlayerByCitizenId(cid)
     if p and p.PlayerData then return p.PlayerData.source end

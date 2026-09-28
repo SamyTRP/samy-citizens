@@ -110,6 +110,26 @@ local function startDrive(ped, veh, spec)
     TaskVehicleDriveToCoordLongrange(ped, veh, spec.x + 0.0, spec.y + 0.0, spec.z + 0.0, (spec.speed or 14.0) + 0.0, spec.style or 786603, 15.0)
 end
 
+-- Oyuncuyu gezdirme: hedef varsa oraya, yoksa şehirde rastgele dolaşır
+local function startRide(ped, veh, spec)
+    if not NetworkHasControlOfEntity(veh) then NetworkRequestControlOfEntity(veh) end
+    SetDriverAbility(ped, 1.0)
+    SetDriverAggressiveness(ped, 0.0)
+    SetVehicleEngineOn(veh, true, true, false)
+    local speed = (spec.speed or 12.0) + 0.0
+    if spec.x then
+        TaskVehicleDriveToCoordLongrange(ped, veh, spec.x + 0.0, spec.y + 0.0, (spec.z or 0.0) + 0.0, speed, spec.style or 786603, 20.0)
+    else
+        TaskVehicleDriveWander(ped, veh, speed, spec.style or 786603)
+    end
+end
+
+-- Cinsiyete göre animasyon ("dans et": erkek / kadın varyasyonu)
+local function specAnim(ped, spec)
+    if IsPedMale(ped) then return spec.dictM, spec.animM end
+    return spec.dictF or spec.dictM, spec.animF or spec.animM
+end
+
 -- ---------------------------------------------------------------------
 -- Rehine (bağlama / eller yukarı / diz çökme / araca binme)
 -- ---------------------------------------------------------------------
@@ -303,6 +323,27 @@ function Tasks.Apply(ped, netId, spec, a)
             TaskTurnPedToFaceEntity(ped, partner, 1500)
         end
         a.phase = 'turning'
+    elseif kind == 'ride' then
+        a.phase = 'start'
+        Tasks.Monitor(ped, netId, spec, a, GetGameTimer())
+    elseif kind == 'anim' then
+        if IsPedInAnyVehicle(ped, false) then
+            TaskLeaveVehicle(ped, GetVehiclePedIsIn(ped, false), 0)
+            a.phase = 'exitveh'
+            return
+        end
+        ClearPedTasks(ped)
+        local dict, anim = specAnim(ped, spec)
+        a.dict, a.anim = dict, anim
+        if spec.face and NetworkDoesEntityExistWithNetworkId(spec.face) then
+            TaskTurnPedToFaceEntity(ped, NetworkGetEntityFromNetworkId(spec.face), 800)
+            a.animAt = GetGameTimer() + 900
+            a.phase = 'turning'
+        elseif dict and loadDict(dict) then
+            TaskPlayAnim(ped, dict, anim, 8.0, -8.0, -1, 1, 0.0, false, false, false)
+            a.phase = 'doing'
+            a.checkAt = GetGameTimer() + 3000
+        end
     end
 end
 
@@ -516,6 +557,62 @@ function Tasks.Monitor(ped, netId, spec, a, now)
                 a.followMode = 'walk'
             end
         end
+    elseif kind == 'ride' then
+        local veh = (spec.veh and NetworkDoesEntityExistWithNetworkId(spec.veh)) and NetworkGetEntityFromNetworkId(spec.veh) or 0
+        if veh == 0 or not DoesEntityExist(veh) then return end
+        if not IsPedInVehicle(ped, veh, false) then
+            if a.phase ~= 'entering' then
+                ClearPedTasks(ped)
+                TaskEnterVehicle(ped, veh, 20000, -1, 1.0, 1, 0)
+                a.phase = 'entering'
+                a.enterAt = now
+            elseif now - (a.enterAt or now) > 22000 then
+                TaskWarpPedIntoVehicle(ped, veh, -1)
+                a.enterAt = now
+            end
+            return
+        end
+        if not spec.boarded then
+            if a.phase ~= 'waitpass' then
+                a.phase = 'waitpass'
+                if not NetworkHasControlOfEntity(veh) then NetworkRequestControlOfEntity(veh) end
+                SetVehicleEngineOn(veh, true, true, false)
+                TaskVehicleTempAction(ped, veh, 1, 1500)
+            end
+            return
+        end
+        if a.phase ~= 'driving' and a.phase ~= 'arrived' then
+            startRide(ped, veh, spec)
+            a.phase = 'driving'
+            a.lastMoveAt = now
+            a.lastPos = GetEntityCoords(veh)
+            return
+        end
+        if a.phase == 'driving' then
+            local vc = GetEntityCoords(veh)
+            if spec.x and dist2d(vc, vector3(spec.x, spec.y, 0.0)) < 25.0 then
+                TaskVehicleTempAction(ped, veh, 1, 8000)
+                report(netId, spec.seq, 'arrived')
+                a.phase = 'arrived'
+            elseif #(vc - a.lastPos) > 3.0 then
+                a.lastPos, a.lastMoveAt = vc, now
+            elseif now - a.lastMoveAt > 30000 then
+                -- takıldı: yeniden yola çık
+                a.lastMoveAt = now
+                startRide(ped, veh, spec)
+            end
+        end
+    elseif kind == 'anim' then
+        if a.phase == 'turning' and now >= (a.animAt or 0) then
+            if a.dict and loadDict(a.dict) then TaskPlayAnim(ped, a.dict, a.anim, 8.0, -8.0, -1, 1, 0.0, false, false, false) end
+            a.phase = 'doing'
+            a.checkAt = now + 3000
+        elseif a.phase == 'doing' and now >= (a.checkAt or 0) then
+            a.checkAt = now + 3000
+            if a.dict and not IsEntityPlayingAnim(ped, a.dict, a.anim, 3) and not IsPedRagdoll(ped) then
+                if loadDict(a.dict) then TaskPlayAnim(ped, a.dict, a.anim, 8.0, -8.0, -1, 1, 0.0, false, false, false) end
+            end
+        end
     elseif kind == 'chat' then
         if a.phase == 'turning' and now - a.startedAt > 1500 then
             TaskStartScenarioInPlace(ped, 'WORLD_HUMAN_HANG_OUT_STREET', 0, true)
@@ -524,13 +621,28 @@ function Tasks.Monitor(ped, netId, spec, a, now)
     end
 end
 
--- Konuşma sırasındaki hareket (üst gövde, görevi bozmaz)
-function Tasks.PlayGesture(ped, name)
+-- Konuşma sırasındaki hareket (üst gövde, görevi bozmaz). Karşılıklı hareketlerde (sarılma, öpücük...)
+-- sakin önce oyuncuya yaklaşır, yüzünü döner, tüm vücut animasyonu oynatır, sonra tekrar ona döner.
+function Tasks.PlayGesture(ped, name, spec)
     local g = SC.Gestures[name]
     if not g then return end
     CreateThread(function()
         if not loadDict(g.dict) then return end
-        TaskPlayAnim(ped, g.dict, g.anim, 4.0, -4.0, g.dur or 2000, 48, 0.0, false, false, false)
+        local target = (g.approach and spec and spec.target) and pedFromServerId(spec.target) or 0
+        if target ~= 0 then
+            local limit = GetGameTimer() + 3000
+            if #(GetEntityCoords(ped) - GetEntityCoords(target)) > g.approach + 0.3 then
+                TaskGoToEntity(ped, target, 3000, g.approach, 1.0, 1073741824, 0)
+                while GetGameTimer() < limit and #(GetEntityCoords(ped) - GetEntityCoords(target)) > g.approach + 0.3 do Wait(100) end
+            end
+            TaskTurnPedToFaceEntity(ped, target, 700)
+            Wait(700)
+        end
+        TaskPlayAnim(ped, g.dict, g.anim, 4.0, -4.0, g.dur or 2000, g.flag or 48, 0.0, false, false, false)
+        if target ~= 0 or (g.flag or 48) < 16 then
+            Wait(g.dur or 2000)
+            if target ~= 0 and DoesEntityExist(target) then TaskTurnPedToFaceEntity(ped, target, -1) end
+        end
         RemoveAnimDict(g.dict)
     end)
 end
@@ -565,7 +677,7 @@ function Tasks.Process(ped, netId, now)
     local anim = es.scAnim
     if type(anim) == 'table' and anim.seq ~= a.animSeq then
         a.animSeq = anim.seq
-        Tasks.PlayGesture(ped, anim.name)
+        Tasks.PlayGesture(ped, anim.name, spec)
     end
 end
 

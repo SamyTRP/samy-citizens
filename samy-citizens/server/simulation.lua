@@ -474,10 +474,84 @@ function Sim.NextSegment(r, t)
     return nil
 end
 
--- Geçici segment (örn. korkunca eve kapanma, admin çağırması) ve randevular rutini ezer
+-- =====================================================================
+-- SABİT GÖREV NOKTASI (admin: "bu sakini şurada özel görevli olarak dik")
+-- r.settings.post = { enabled, x, y, z, h, scenario, from = 'HH:MM', to = 'HH:MM', label }
+-- Saat verilmezse 7/24 oradadır. Nokta, sakine özel görünmez bir konum olarak eklenir ('post:<id>').
+-- =====================================================================
+local function postOf(r)
+    local p = r.settings and r.settings.post
+    if type(p) ~= 'table' or not p.enabled or not tonumber(p.x) or not tonumber(p.y) or not tonumber(p.z) then return nil end
+    return p
+end
+
+function Sim.RefreshPost(r)
+    local id = 'post:' .. r.id
+    local p = postOf(r)
+    if not p then
+        if Sim.Locations[id] then
+            Sim.ReleasePoint(r)
+            Sim.Locations[id] = nil
+            Sim.Occupancy[id] = nil
+        end
+        r.plans = {}
+        return
+    end
+    local coords = vector4(p.x + 0.0, p.y + 0.0, p.z + 0.0, (tonumber(p.h) or 0.0) + 0.0)
+    Sim.Locations[id] = {
+        id = id, label = (p.label and p.label ~= '') and p.label or L('loc_post'), type = 'post', public = false, synthetic = true,
+        door = coords, aliases = {},
+        points = { { coords = coords, scenario = p.scenario or 'WORLD_HUMAN_GUARD_STAND', tags = { 'post' } } },
+    }
+    r.plans = {}
+end
+
+-- t anında görev penceresi (yoksa nil)
+function Sim.PostSegmentAt(r, t)
+    local p = postOf(r)
+    if not p then return nil end
+    local day = math.floor(t / 1440)
+    local f, to = Utils.ParseTime(p.from or ''), Utils.ParseTime(p.to or '')
+    local seg = { activity = 'guard', location = 'post:' .. r.id, firm = true, post = true }
+    if not f or not to or f == to then
+        seg.from, seg.to, seg.key = day * 1440, day * 1440 + 1440, 'post:' .. day
+        return seg
+    end
+    -- gece yarısını aşan vardiya (ör. 22:00-06:00): önceki günün penceresi de kontrol edilir
+    for _, d in ipairs({ day, day - 1 }) do
+        local a = d * 1440 + f
+        local b = d * 1440 + to
+        if b <= a then b = b + 1440 end
+        if t >= a and t < b then
+            seg.from, seg.to, seg.key = a, b, 'post:' .. d
+            return seg
+        end
+    end
+    return nil
+end
+
+local function postBoundaries(r, t)
+    local p = postOf(r)
+    if not p then return {} end
+    local f, to = Utils.ParseTime(p.from or ''), Utils.ParseTime(p.to or '')
+    local day = math.floor(t / 1440)
+    if not f or not to or f == to then return { (day + 1) * 1440 } end
+    local out = {}
+    for d = day - 1, day + 1 do
+        out[#out + 1] = d * 1440 + f
+        local b = d * 1440 + to
+        if b <= d * 1440 + f then b = b + 1440 end
+        out[#out + 1] = b
+    end
+    return out
+end
+
+-- Geçici segment (örn. korkunca eve kapanma, admin çağırması), görev noktası ve randevular rutini ezer
 function Sim.EffectiveSegmentAt(r, t)
     local ts = r.tempSeg
     if ts and t >= ts.from and t < ts.to then return ts end
+    local ps = Sim.PostSegmentAt(r, t)
+    if ps then return ps end
     if SC.Appt then
         local a = SC.Appt.SegmentFor(r, t)
         if a then return a end
@@ -496,6 +570,7 @@ function Sim.NextBoundary(r, t)
         consider(r.tempSeg.from)
         consider(r.tempSeg.to)
     end
+    for _, b in ipairs(postBoundaries(r, t)) do consider(b) end
     if SC.Appt then
         for _, b in ipairs(SC.Appt.BoundariesFor(r)) do consider(b) end
     end
@@ -731,7 +806,8 @@ function Sim.ClearOverride(r, reason)
     local ov = r.override
     if not ov then return end
     r.override = nil
-    if ov.type == 'follow' or ov.type == 'flee' or ov.type == 'meet' or ov.type == 'handsup' or ov.type == 'cower' or ov.type == 'hostage' then
+    local FREEPOS = { follow = true, flee = true, meet = true, handsup = true, cower = true, hostage = true, wait = true, ['goto'] = true, ride = true, perform = true }
+    if FREEPOS[ov.type] then
         local pos = SC.Spawner and SC.Spawner.GetPedCoords(r)
         if pos then
             Sim.ReleasePoint(r)
@@ -995,6 +1071,8 @@ function Sim.AddResident(data)
         print(('^3[samy-citizens] %s iş yeri bulunamadı: %s^7'):format(r.id, tostring(r.job.workplaceId)))
         r.job.workplaceId = nil
     end
+    r.settings = type(r.settings) == 'table' and r.settings or {}
+    Sim.RefreshPost(r)
     local saved = r.savedState
     r.savedState = nil
     if type(saved) == 'table' then
@@ -1026,6 +1104,7 @@ function Sim.RemoveResident(id)
     if not r then return end
     if SC.Spawner then SC.Spawner.Despawn(r, 'removed', true) end
     Sim.ReleasePoint(r)
+    Sim.Locations['post:' .. id] = nil
     Sim.Residents[id] = nil
     for i, x in ipairs(Sim.List) do
         if x.id == id then
