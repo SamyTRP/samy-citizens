@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <title>samy-citizens</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 3D konuşma baloncukları -->
+  <div id="bubbles"></div>
+
+  <!-- Konuşma paneli -->
+  <section id="convo" class="convo hidden">
+    <header class="convo-head">
+      <div class="avatar" id="cv-avatar">?</div>
+      <div class="who">
+        <div class="name" id="cv-name">...</div>
+        <div class="sub"><span id="cv-subtitle"></span><span class="badge" id="cv-stage"></span></div>
+      </div>
+      <div class="rel-bars">
+        <div class="rel-bar"><span data-t="rel_familiarity">Samimiyet</span><div class="track"><div class="fill" id="cv-bar-fam"></div></div></div>
+        <div class="rel-bar"><span data-t="rel_affinity">Sevgi</span><div class="track"><div class="fill" id="cv-bar-aff"></div></div></div>
+        <div class="rel-bar"><span data-t="rel_trust">Güven</span><div class="track"><div class="fill" id="cv-bar-trust"></div></div></div>
+      </div>
+      <div class="mood" id="cv-mood"></div>
+      <button class="icon-btn" id="cv-release" title="">&#8645;</button>
+      <button class="icon-btn" id="cv-close" title="">&#10005;</button>
+    </header>
+    <div class="convo-log" id="cv-log"></div>
+    <div class="typing hidden" id="cv-typing"><span></span><span></span><span></span></div>
+    <div class="suggest" id="cv-suggest"></div>
+    <footer class="convo-input">
+      <input id="cv-input" maxlength="300" autocomplete="off" spellcheck="false">
+      <span class="count" id="cv-count">0/300</span>
+      <button class="primary" id="cv-send"></button>
+    </footer>
+    <div class="convo-hint" id="cv-hint"></div>
+  </section>
+
+  <!-- Yerleşik telefon (Config.Phone.Provider = 'builtin') -->
+  <section id="phone" class="phone hidden">
+    <div class="phone-head">
+      <button class="icon-btn hidden" id="ph-back">&#8592;</button>
+      <div class="title" id="ph-title"></div>
+      <button class="icon-btn" id="ph-close">&#10005;</button>
+    </div>
+    <div class="phone-list" id="ph-list"></div>
+    <div class="thread hidden" id="ph-thread"></div>
+    <div class="phone-input hidden" id="ph-input-row">
+      <input id="ph-input" maxlength="300" autocomplete="off">
+      <button class="primary" id="ph-send">&#10148;</button>
+    </div>
+  </section>
+
+  <!-- Yönetim paneli -->
+  <section id="admin" class="admin hidden">
+    <div class="admin-win">
+      <aside class="admin-side">
+        <div class="brand">samy-citizens<small id="ad-sub"></small></div>
+        <button class="tab-btn active" data-tab="residents"></button>
+        <button class="tab-btn" data-tab="locations"></button>
+        <button class="tab-btn" data-tab="routines"></button>
+        <button class="tab-btn" data-tab="dialogue"></button>
+        <div class="spacer"></div>
+        <button class="ghost" id="ad-close"></button>
+      </aside>
+      <main class="admin-main">
+        <div class="admin-top" id="ad-top"></div>
+        <div class="admin-body" id="ad-body"></div>
+      </main>
+    </div>
+  </section>
+
+  <div id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
