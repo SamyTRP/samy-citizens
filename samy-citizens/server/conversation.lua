@@ -105,17 +105,20 @@ end
 
 local function clientPayload(r, c, text, emotion, extra)
     local rel = c.rel
+    local view = SC.Rel.PublicView(rel)
     local p = {
         text = text,
         emotion = emotion or 'neutral',
         name = Convo.DisplayName(r, rel),
         nameKnown = (rel.npc_name_shown or SC.StageAtLeast(rel.stage, 'acquaintance')) and true or false,
         subtitle = subtitle(r, rel),
-        stage = rel.stage,
-        stageLabel = SC.Rel.StageLabel(rel.stage),
-        rel = SC.Rel.PublicView(rel),
+        stage = view.display or rel.stage,
+        stageLabel = view.displayLabel or SC.Rel.StageLabel(rel.stage),
+        rel = view,
         mood = Sim.MoodKey(r),
+        moodLabel = SC.Persona and SC.Persona.MoodLabel(r, rel, c.citizenid) or nil,
         suggestions = SC.Dialogue.Suggestions(dialogueCtx(r, c)),
+        menu = SC.Menu and SC.Menu.Build(r, c) or nil,
         ui = {},
     }
     for k, v in pairs(extra or {}) do p[k] = v end
@@ -152,8 +155,13 @@ lib.callback.register('samy-citizens:startConversation', function(src, netId)
     end
     local ped = Spawner.GetPed(r)
     if not hostage and not Config.Conversation.AllowWhileDriving and ped and GetVehiclePedIsIn(ped, false) ~= 0 then
-        return false, L('err_driving')
+        -- v3: eşlikçi NPC aynı araçta yolcu/şoförken konuşulabilir
+        local comp = SC.NPC.Companion(r)
+        local pped = GetPlayerPed(src)
+        local sameCar = comp and comp.target == src and pped and pped ~= 0 and GetVehiclePedIsIn(pped, false) == GetVehiclePedIsIn(ped, false)
+        if not sameCar then return false, L('err_driving') end
     end
+    if r.interaction and r.interaction.src ~= src then return false, L('err_npc_busy_talking') end
     local cid = SC.Bridge.GetCitizenId(src)
     if not cid then return false, L('err_no_char') end
 
@@ -180,6 +188,9 @@ lib.callback.register('samy-citizens:startConversation', function(src, netId)
         busy = false, meetInfo = meetInfo, playerMsgs = 0, negative = hostage, hostage = hostage,
         place = r.state.locationId or r.state.toLocationId,
     }
+    -- v3: kısa süreli bağlam (panel kapanıp açılsa da son konu hatırlanır)
+    local ctxMem = SC.Context and SC.Context.Peek(r.id, cid)
+    if ctxMem and ctxMem.lastTopic then c.lastTopic = ctxMem.lastTopic end
     r.convo = c
     Convo.bySrc[src] = r.id
     Spawner.UpdateTask(r)
@@ -216,6 +227,11 @@ function Convo.End(r, reason)
     if c.playerMsgs >= 3 and not c.negative and not c.hostage then
         local b = Config.Dialogue.GoodConversationBonus or { 2, 1 }
         SC.Rel.ApplyDelta(c.rel, b[1] or 0, b[2] or 0)
+        if SC.RelXP then SC.RelXP.Add(c.rel, 'good_conversation', { r = r, src = c.src }) end
+    end
+    if SC.Context and c.lastTopic and not c.hostage then
+        local cm = SC.Context.Get(r.id, c.citizenid)
+        if cm then SC.Context.PushTopic(cm, c.lastTopic) end
     end
     -- konuşma özeti (sonraki "ne konuşmuştuk?" sorusu için)
     if c.playerMsgs >= 1 and not c.hostage then
@@ -333,6 +349,32 @@ function Convo.ApplyTurn(r, c, res)
             valence = m.valence or 0, shareable = m.shareable == true, data = m.data,
         })
     end
+    -- v3: ilişki XP'si, oyuncuya karşı geçici ruh hâli, kısa süreli bağlam
+    if not c.hostage and SC.RelXP then
+        local xpOpts = { r = r, src = c.src }
+        if res.intent == 'insult' then
+            SC.RelXP.Add(rel, 'insult', xpOpts)
+            SC.RelXP.Stat(rel, 'insults', 1)
+            SC.Context.AddMoodTowards(r.id, c.citizenid, -30, 30)
+        elseif res.intent == 'threat' then
+            SC.RelXP.Add(rel, 'threat', xpOpts)
+            SC.Context.AddMoodTowards(r.id, c.citizenid, -60, 60)
+        elseif res.intent == 'compliment' then
+            SC.RelXP.Add(rel, 'compliment', xpOpts)
+            SC.RelXP.Stat(rel, 'compliments', 1)
+            SC.Context.AddMoodTowards(r.id, c.citizenid, 12, 20)
+        elseif (res.dAff or 0) >= 0 then
+            SC.RelXP.Add(rel, 'talk', xpOpts)
+        end
+        if (res.dAff or 0) < 0 and res.intent ~= 'insult' and res.intent ~= 'threat' then
+            SC.RelXP.Add(rel, 'rude', xpOpts)
+        end
+    end
+    if SC.Context and not c.hostage then
+        local last = c.history[#c.history]
+        SC.Context.RecordTurn(r.id, c.citizenid, last and last.role == 'player' and last.text or '', res.reply, res.canonical or res.intent, c.lastTopic)
+    end
+    r.lastIntent = res.canonical or res.intent
     if res.event then
         local who = SC.Dialogue.PlayerAddress(rel)
         SC.World.ApplyEvent(r, c.citizenid, res.event, L('mem_' .. res.event, who ~= '' and who or L('ctx_someone')))
@@ -359,16 +401,33 @@ function Convo.ApplyTurn(r, c, res)
         ui = results.ui,
     }))
 
+    if results.interact and SC.Interact then
+        SC.Interact.Start(r, c.src, results.interact, { decided = true })
+    end
     if results.flee then
         local pped = GetPlayerPed(c.src)
         local from = (pped and pped ~= 0) and GetEntityCoords(pped) or (Spawner.GetPedCoords(r) or vector3(0.0, 0.0, 0.0))
         local src = c.src
         Convo.End(r, 'flee')
         SC.World.Flee(r, from, src)
-    elseif results.follow then
-        local src, minutes = c.src, results.follow
-        Convo.End(r, 'follow')
-        Sim.SetOverride(r, { type = 'follow', target = src, untilMs = GetGameTimer() + minutes * 60000 })
+    elseif results.companion or results.invite or results.goTo or results.companionStop or results.companionResume then
+        -- v3: beraber gezme sistemi (konuşma kapanır, NPC eşlik etmeye başlar)
+        local src = c.src
+        SetTimeout(1800, function()
+            if r.convo == c then Convo.End(r, results.companionStop == 'leave' and 'npc' or 'follow') end
+            if not SC.Companion then return end
+            if results.companionStop then
+                SC.Companion.Stop(r, results.companionStop == 'wait' and 'wait' or 'dismissed', src)
+            elseif results.companionResume then
+                SC.Companion.Resume(r, src)
+            elseif results.invite then
+                SC.Companion.Start(r, src, 'follow', { decided = true, vehNet = results.invite.veh })
+            elseif results.goTo then
+                SC.Companion.GoTo(r, src, results.goTo, { decided = true })
+            else
+                SC.Companion.Start(r, src, 'follow', { decided = true })
+            end
+        end)
     elseif results.endConversation then
         SetTimeout(3500, function()
             if r.convo == c then Convo.End(r, 'npc') end
@@ -394,6 +453,15 @@ function Convo.Tick()
             Convo.End(r, 'distance')
         elseif not c.busy and timer - c.lastActivity > (Config.Conversation.IdleTimeoutSec or 150) * 1000 then
             Convo.End(r, 'idle')
+        elseif not c.busy and not c.hostage and not c.silencePrompted and Config.AutoConversation and Config.AutoConversation.enabled
+            and timer - c.lastActivity > (Config.AutoConversation.silenceSec or 70) * 1000 and SC.DGen then
+            -- v3: oyuncu uzun süre susarsa NPC kendisi bir şey söyler (konuşma başına bir kez)
+            c.silencePrompted = true
+            local line = SC.DGen.Compose('silence_talk', r, c.rel, { src = src })
+            if line then
+                Convo.NpcSay(r, c, line, 'neutral')
+                c.lastActivity = timer
+            end
         end
     end
 end
@@ -516,6 +584,14 @@ lib.callback.register('samy-citizens:giveGift', function(src, netId, itemName)
     if rel.daily_gifts < (Config.Gifts.DailyBonusPerResident or 1) then
         rel.daily_gifts = rel.daily_gifts + 1
         SC.Rel.ApplyDelta(rel, value.affinity or 0, value.trust or 0, { bypassCap = true })
+        if SC.RelXP then SC.RelXP.Add(rel, 'gift', { r = r, src = src }) end
+    end
+    if SC.RelXP then SC.RelXP.Stat(rel, 'gifts', 1) end
+    if SC.Context then SC.Context.AddMoodTowards(r.id, cid, 15, 30) end
+    -- sevdiği / sevmediği bir şey mi?
+    if SC.Persona then
+        local op = SC.Persona.Opinion(r, label .. ' ' .. itemName)
+        if op ~= 0 then SC.Rel.ApplyDelta(rel, op * 2, 0, { bypassCap = true }) end
     end
     SC.Rel.Touch(rel)
     SC.World.ApplyEvent(r, cid, 'gift', L('mem_gift', rel.name_known and charName or L('ctx_someone'), label), { item = label })

@@ -115,6 +115,7 @@ const Convo = {
     $('cv-input').maxLength = CFG.maxChars || 300;
     this.updateCount();
     this.header(data);
+    this.menu(data && data.menu);
     if (data && data.text) this.addMsg('npc', data.text, data.emotion);
     this.suggest(data && data.suggestions);
     this.thinking(!!(data && data.pending));
@@ -131,7 +132,7 @@ const Convo = {
     st.textContent = d.stageLabel || '';
     st.className = 'badge stage-' + (d.stage || 'stranger');
     $('cv-mood').innerHTML = moodSvg(d.mood);
-    $('cv-mood').title = t('mood_' + (d.mood || 'neutral'));
+    $('cv-mood').title = d.moodLabel ? `${t('mood_label')}: ${t('moodlbl_' + d.moodLabel)}` : t('mood_' + (d.mood || 'neutral'));
     const rel = d.rel || {};
     $('cv-bar-fam').style.width = clamp(rel.familiarity || 0, 0, 100) + '%';
     const aff = rel.affinity || 0;
@@ -139,6 +140,71 @@ const Convo = {
     affBar.style.width = clamp(Math.abs(aff), 0, 100) + '%';
     affBar.classList.toggle('neg', aff < 0);
     $('cv-bar-trust').style.width = clamp(rel.trust || 0, 0, 100) + '%';
+    // v3: ilişki XP'si (bir sonraki aşamaya ilerleme)
+    const xp = rel.xp || 0;
+    const next = rel.nextXp || 0;
+    const xpBar = $('cv-bar-xp');
+    if (xpBar) {
+      xpBar.style.width = (next > 0 ? clamp((xp / next) * 100, 0, 100) : 100) + '%';
+      xpBar.parentElement.parentElement.title = `${t('xp_label')} ${xp}` + (next ? ' · ' + t('xp_next', next) : '');
+    }
+  },
+
+  // v3: kategori menüsü (sunucu hangi kategorilerin görüneceğine karar verir)
+  menuData: null,
+  menuCat: null,
+  menu(list) {
+    this.menuData = Array.isArray(list) ? list : null;
+    const bar = $('cv-menu');
+    bar.innerHTML = '';
+    if (!this.menuData || this.locked) { this.closeSub(); return; }
+    const ICONS = { talk: '💬', ask: '❓', walk: '🚶', invite: '🚗', goto: '📍', phone: '📱', activities: '☕', social: '🤝', adult: '❤️' };
+    for (const c of this.menuData) {
+      const b = el('button', { type: 'button', class: (c.adult ? 'adult' : '') + (this.menuCat === c.id ? ' active' : '') },
+        el('span', { class: 'ic', text: ICONS[c.id] || '•' }), el('span', { text: c.label || c.id }));
+      b.addEventListener('click', () => this.pickCat(c));
+      bar.appendChild(b);
+    }
+    // açık alt menü güncellendiyse yenile
+    if (this.menuCat) {
+      const cur = this.menuData.find((x) => x.id === this.menuCat);
+      if (cur && cur.items) this.openSub(cur); else this.closeSub();
+    }
+  },
+  pickCat(c) {
+    if (this.busy || this.locked) return;
+    if (c.id === 'talk') { this.closeSub(); $('cv-input').focus(); return; }
+    if (c.items) { if (this.menuCat === c.id) this.closeSub(); else this.openSub(c); return; }
+    this.closeSub();
+    this.runItem(c);
+  },
+  openSub(c) {
+    this.menuCat = c.id;
+    const box = $('cv-sub');
+    box.innerHTML = '';
+    box.classList.remove('hidden');
+    box.appendChild(el('button', { type: 'button', class: 'back', text: t('menu_back'), onclick: () => this.closeSub() }));
+    for (const it of c.items || []) {
+      box.appendChild(el('button', { type: 'button', class: it.adult ? 'adult' : '', text: it.label || it.text || '?', onclick: () => this.runItem(it) }));
+    }
+    document.querySelectorAll('#cv-menu button').forEach((b, i) => {
+      const cat = this.menuData && this.menuData[i];
+      b.classList.toggle('active', !!cat && cat.id === c.id);
+    });
+  },
+  closeSub() {
+    this.menuCat = null;
+    $('cv-sub').classList.add('hidden');
+    $('cv-sub').innerHTML = '';
+    document.querySelectorAll('#cv-menu button').forEach((b) => b.classList.remove('active'));
+  },
+  runItem(it) {
+    if (this.busy || this.locked) return;
+    if (it.text) { this.send(it.text); return; }
+    if (it.action) {
+      post('convo:action', { action: it.action, id: it.id });
+      if (it.action !== 'interact') this.closeSub();
+    }
   },
 
   addMsg(role, text, emotion) {
@@ -167,6 +233,7 @@ const Convo = {
     if (d.stageChanged) this.system(t('stage_changed', d.stageChanged), 'good');
     for (const u of d.ui || []) this.system(u.text, 'good');
     if (d.suggestions) this.suggest(d.suggestions);
+    if (d.menu) this.menu(d.menu);
   },
 
   // hazır cevap önerileri: tıklanınca doğrudan gönderilir
@@ -206,6 +273,8 @@ const Convo = {
     this.locked = true;
     this.thinking(false);
     $('cv-suggest').innerHTML = '';
+    $('cv-menu').innerHTML = '';
+    this.closeSub();
     $('cv-input').disabled = true;
     $('cv-send').disabled = true;
   },
@@ -699,6 +768,25 @@ const Admin = {
     }
     f.acq = inp((d.acquaintances || []).join(', '), { placeholder: 'selin_aksoy, emre_gunes' });
 
+    // v3 profil: kişilik puanları, kategori, sevdikleri/sevmedikleri, ilişki tercihleri
+    const pf = d.profile || {};
+    const pst = pf.stats || {};
+    const dst = d.derivedStats || {};
+    const STATS = ['friendliness', 'humor', 'confidence', 'jealousy', 'patience', 'romantic', 'social', 'aggression'];
+    f.stats = {};
+    for (const k of STATS) f.stats[k] = inp(pst[k] !== undefined ? pst[k] : '', { type: 'number', min: 0, max: 100, placeholder: dst[k] !== undefined ? String(dst[k]) : '50' });
+    const typeOpts = Object.keys((this.boot && this.boot.npcTypes) || { citizen: 'citizen' }).map((k) => ({ value: k, label: (this.boot.npcTypes || {})[k] || k }));
+    f.npcType = sel(typeOpts.length ? typeOpts : [{ value: 'citizen', label: 'citizen' }], pf.type || 'citizen');
+    f.adult = el('input', { type: 'checkbox', checked: pf.adult === true });
+    f.zone = inp(pf.zone || '', { placeholder: 'VanillaUnicorn' });
+    f.likes = inp((pf.likes || []).join(', '));
+    f.dislikes = inp((pf.dislikes || []).join(', '));
+    const rom = pf.romance || {};
+    f.romOpen = el('input', { type: 'checkbox', checked: rom.open !== false });
+    f.romPref = sel([{ value: 'any', label: t('pref_any') }, { value: 'male', label: t('pref_male') }, { value: 'female', label: t('pref_female') }], rom.prefers || 'any');
+    f.favAreas = inp((pf.favorite_areas || []).join(', '), { placeholder: 'vespucci, del_perro' });
+    f.vehPref = sel([{ value: '', label: '—' }, { value: 'car', label: t('veh_pref_car') }, { value: 'walk', label: t('veh_pref_walk') }, { value: 'transit', label: t('veh_pref_transit') }], pf.vehicle_pref || '');
+
     const modelCheck = el('span', { class: 'muted' });
     const checkModel = async () => {
       const ok = await this.call('validateModel', f.model.value.trim(), true);
@@ -748,6 +836,15 @@ const Admin = {
       field(t('f_enabled'), f.enabled), field(t('f_reset_look'), f.resetLook));
     root.appendChild(form4);
 
+    root.appendChild(el('div', { class: 'section-title', text: t('sec_profile') }));
+    root.appendChild(el('div', { class: 'muted', text: t('profile_help') }));
+    const form5 = el('div', { class: 'form' });
+    for (const k of STATS) form5.append(field(t('f_stat_' + k), f.stats[k]));
+    form5.append(field(t('f_npc_type'), f.npcType), field(t('f_adult'), f.adult), field(t('f_zone'), f.zone), field(t('f_vehicle_pref'), f.vehPref),
+      field(t('f_likes'), f.likes, 'span2'), field(t('f_dislikes'), f.dislikes, 'span2'),
+      field(t('f_romance_open'), f.romOpen), field(t('f_romance_prefers'), f.romPref), field(t('f_fav_areas'), f.favAreas, 'span2'));
+    root.appendChild(form5);
+
     const save = async () => {
       const payload = {
         id: f.id.value.trim(), firstname: f.firstname.value.trim(), lastname: f.lastname.value.trim(),
@@ -771,6 +868,15 @@ const Admin = {
         acquaintances: f.acq.value.split(',').map((s) => s.trim()).filter(Boolean),
         enabled: f.enabled.checked,
         resetAppearance: f.resetLook.checked,
+        profile: {
+          type: f.npcType.value, adult: f.adult.checked, zone: f.zone.value.trim() || undefined,
+          stats: Object.fromEntries(STATS.map((k) => [k, f.stats[k].value.trim()]).filter(([, v]) => v !== '').map(([k, v]) => [k, num(v, 50)])),
+          likes: f.likes.value.split(',').map((s) => s.trim()).filter(Boolean),
+          dislikes: f.dislikes.value.split(',').map((s) => s.trim()).filter(Boolean),
+          romance: { open: f.romOpen.checked, prefers: f.romPref.value },
+          favorite_areas: f.favAreas.value.split(',').map((s) => s.trim()).filter(Boolean),
+          vehicle_pref: f.vehPref.value || undefined,
+        },
       };
       if (!payload.id || !/^[a-z0-9_]+$/.test(payload.id)) { toast(t('err_id'), 'bad'); return; }
       const ok = await this.call('saveResident', payload);
@@ -845,7 +951,7 @@ const Admin = {
     const memBox = el('div');
     const table = el('table', { class: 'grid' });
     table.appendChild(el('thead', {}, el('tr', {},
-      ['col_character', 'col_stage', 'col_fam', 'col_aff', 'col_trust', 'col_met', 'col_last', ''].map((k) => el('th', { text: k ? t(k) : '' })))));
+      ['col_character', 'col_stage', 'col_fam', 'col_aff', 'col_trust', 'col_xp', 'col_romance', 'col_met', 'col_last', ''].map((k) => el('th', { text: k ? t(k) : '' })))));
     const tb = el('tbody');
     const showMemories = async (cid, name) => {
       memBox.innerHTML = '';
@@ -869,6 +975,7 @@ const Admin = {
         el('td', {}, el('b', { text: r.name }), el('div', { class: 'muted', text: r.citizenid })),
         el('td', {}, el('span', { class: 'badge stage-' + r.stage, text: r.stageLabel })),
         el('td', { text: r.familiarity }), el('td', { text: r.affinity }), el('td', { text: r.trust }),
+        el('td', { text: r.xp || 0 }), el('td', { text: r.romanceLabel || '-' }),
         el('td', { text: `${r.timesMet} / ${r.meetDays}${t('days_short')}` }),
         el('td', { class: 'muted', text: r.lastSeen + (r.phoneKnown ? ' 📱' : '') }),
         el('td', {}, el('div', { class: 'row-actions' },
@@ -880,6 +987,8 @@ const Admin = {
                 { key: 'affinity', label: t('col_aff'), value: r.affinity, type: 'number' },
                 { key: 'trust', label: t('col_trust'), value: r.trust, type: 'number' },
                 { key: 'meet_days', label: t('col_meetdays'), value: r.meetDays, type: 'number' },
+                { key: 'xp', label: t('col_xp'), value: r.xp || 0, type: 'number' },
+                { key: 'romance', label: t('col_romance') + ' (none / dating / partner)', value: r.romance || 'none' },
               ]);
               if (!vals) return;
               const res = await this.call('setRelationship', { npcId: id, citizenid: r.citizenid, fields: vals });
@@ -1351,7 +1460,12 @@ const DevMock = {
   applyStaticStrings();
   if (!IN_GAME) {
     document.body.style.background = 'linear-gradient(135deg,#3b4a5e,#1c2430)';
-    Convo.show({ name: 'Murat Demir', subtitle: 'Oto tamircisi', stage: 'acquaintance', stageLabel: 'Tanıdık', mood: 'good', rel: { familiarity: 34, affinity: 22, trust: 28 }, text: 'Ooo, sen misin? Hoş geldin. Ne var ne yok?', suggestions: ['Nasılsın?', 'Ne yapıyorsun?', 'Numaranı alabilir miyim?', 'Beni hatırlıyor musun?', 'Görüşürüz'] });
+    Convo.show({ name: 'Murat Demir', subtitle: 'Oto tamircisi', stage: 'acquaintance', stageLabel: 'Tanıdık', mood: 'good', moodLabel: 'happy', rel: { familiarity: 34, affinity: 22, trust: 28, xp: 180, nextXp: 300 }, text: 'Ooo, sen misin? Hoş geldin. Ne var ne yok?', suggestions: ['Nasılsın?', 'Ne yapıyorsun?', 'Numaranı alabilir miyim?', 'Beni hatırlıyor musun?', 'Görüşürüz'],
+      menu: [{ id: 'talk', label: 'Konuş' }, { id: 'ask', label: 'Soru Sor', items: [{ label: 'Adın ne?', text: 'Adın ne?' }, { label: 'Kaçta işe gidiyorsun?', text: 'Kaçta işe gidiyorsun?' }] },
+        { id: 'walk', label: 'Beraber Yürü', text: 'Benimle gel' }, { id: 'invite', label: 'Arabama Davet Et', action: 'invite' },
+        { id: 'goto', label: 'Bir Yere Git', items: [{ label: 'Vespucci Plajı', action: 'goto', id: 'vespucci_beach' }, { label: 'Bir bar', action: 'goto', id: 'bar' }] },
+        { id: 'activities', label: 'Aktiviteler', items: [{ label: 'Ne yapalım?', text: 'Ne yapalım?' }] },
+        { id: 'social', label: 'Sosyal Etkileşimler', items: [{ label: 'El sıkış', action: 'interact', id: 'handshake' }, { label: 'Sarıl', action: 'interact', id: 'hug' }] }] });
     Convo.addMsg('player', 'İyiyim usta, arabanın motoru tekliyor, bakabilir misin?');
     Convo.npcMessage({ text: 'Getir yarın sabah, bir bakarız. Bujiler gitmiştir büyük ihtimal.', emotion: 'happy', name: 'Murat Demir', stage: 'acquaintance', stageLabel: 'Tanıdık', mood: 'good', rel: { familiarity: 36, affinity: 24, trust: 29 }, ui: [{ text: '📱 Murat numarasını verdi: 55512345' }] });
     Bubbles.set('n1', 'Getir yarın sabah, bir bakarız.', 'npc');

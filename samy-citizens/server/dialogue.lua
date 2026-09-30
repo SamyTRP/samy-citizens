@@ -104,7 +104,21 @@ local function within1(a, b)
 end
 
 -- Eşleşme katsayısı: 1 tam, 0.7 yazım hatasıyla, nil yok
+-- pat tablo ise KELİME KOMBİNASYONU: her grup (herhangi bir sırada) eşleşmeli; grup içinde '|' ile alternatifler
 local function matchPattern(norm, tokens, pat, fuzzy)
+    if type(pat) == 'table' then
+        local worst = 1
+        for _, group in ipairs(pat) do
+            local best
+            for alt in tostring(group):gmatch('[^|]+') do
+                local m = matchPattern(norm, tokens, alt, fuzzy)
+                if m and (not best or m > best) then best = m end
+            end
+            if not best then return nil end
+            if best < worst then worst = best end
+        end
+        return worst
+    end
     if pat:sub(1, 1) == '=' then
         local w = pat:sub(2)
         for _, t in ipairs(tokens) do if t == w then return 1 end end
@@ -132,6 +146,14 @@ local function matchPattern(norm, tokens, pat, fuzzy)
         end
     end
     return nil
+end
+
+-- Desen uzunluğu (puanlamada uzun/özgül desenler daha ağır basar)
+local function patLen(pat)
+    if type(pat) ~= 'table' then return #pat end
+    local n = 0
+    for _, g in ipairs(pat) do n = n + #(tostring(g):match('^[^|]+') or '') + 1 end
+    return n
 end
 
 local function hasToken(tokens, ...)
@@ -458,7 +480,7 @@ function Dialogue.Analyze(r, text)
             local fuzzy = fuzzyOn and not intent.exact
             for _, pat in ipairs(intent.patterns or {}) do
                 local m = matchPattern(norm, tokens, pat, fuzzy)
-                if m then s = s + (1 + math.min(#pat, 18) / 6) * m end
+                if m then s = s + (1 + math.min(patLen(pat), 18) / 6) * m end
             end
             if s > 0 then scores[intent.id] = s * (intent.weight or 1) end
         end
@@ -521,6 +543,9 @@ function Dialogue.Tone(r)
     end
     return r._tone
 end
+
+-- Sadece kişilik özelliklerinden (traits) gelen ton; puanlar ve ilişki aşaması SC.Persona.Tone'da eklenir
+Dialogue.BaseTone = Dialogue.Tone
 
 function Dialogue.Talkative(r)
     local traits = Utils.Fold(table.concat(r.personality.traits or {}, ' '))
@@ -669,6 +694,23 @@ function Dialogue.Vars(r, rel)
         years = tostring(years),
         car = r.vehicle and r.vehicle.model and Dialogue.Capitalize(r.vehicle.model) or nil,
     }
+    -- v3 yer tutucuları
+    local shift = r.job and r.job.shift
+    vars.shift_start = shift and shift.start or nil
+    vars.shift_end = shift and shift['end'] or nil
+    if SC.Persona then
+        local likes, dislikes = SC.Persona.Likes(r), SC.Persona.Dislikes(r)
+        vars.likes1 = likes[1]
+        vars.dislike1 = dislikes[1]
+        vars.dislike2 = dislikes[2]
+        vars.mood = L('moodlbl_' .. SC.Persona.MoodLabel(r, rel, rel and rel.citizenid))
+    end
+    if SC.RelXP and rel and rel.stage then
+        vars.xp_level = Dialogue.Lowerfirst(SC.RelXP.Label(SC.RelXP.DisplayStage(rel)))
+    end
+    local here = SC.Aware and SC.Aware.Place(SC.NPC.Coords(r), 150.0)
+    vars.place = here and here.label or vars.here
+    vars.doing_short = L('actn.' .. tostring(st.activity))
     -- "şu an ne yapıyorsun" cümlesi: boş kalacak yer tutucusu olmayanlardan, önceden doldurulmuş
     local function okLines(list)
         local ok = {}
@@ -725,7 +767,7 @@ function Dialogue.Bucket(key, r, stage, sub)
     local t = D.Lines[key]
     if not t then return nil end
     if sub then return t[sub] end
-    local tone = Dialogue.Tone(r)
+    local tone = SC.Persona and SC.Persona.Tone(r, stage) or Dialogue.Tone(r)
     local g = Dialogue.StageGroup(stage)
     for _, k in ipairs({ tone .. '_' .. g, g, tone, 'default' }) do
         if t[k] and #t[k] > 0 then return t[k] end
@@ -986,6 +1028,31 @@ local function askBack(ctx, out, key, kind, chance)
         ctx.c.askedKinds[kind] = true
     end
 end
+
+-- ---------------------------------------------------------------------
+-- Eklenti API'si (server/npc_intents.lua yeni niyetleri buradan kaydeder)
+-- ---------------------------------------------------------------------
+Dialogue.Handlers = handlers
+Dialogue.ExpectHooks = {}
+
+function Dialogue.Register(id, fn, o)
+    handlers[id] = fn
+    o = o or {}
+    if o.composable then COMPOSABLE[id] = true end
+    if o.lead then LEAD_OK[id] = true end
+    if o.topic then TOPIC_OF[id] = o.topic end
+    if o.info then INFO_INTENTS[id] = true end
+    if o.noAsk then NO_ASK[id] = true end
+    if o.filler then FILLER_OK[id] = true end
+    if o.emo then EMO[id] = o.emo end
+    if o.overlap then OVERLAP[id] = o.overlap end
+end
+
+Dialogue.H = {
+    askBack = askBack, pick = pick, filterUsable = filterUsable, recommendPlace = recommendPlace,
+    purposeFromText = purposeFromText, planPhrase = planPhrase, meetFlow = meetFlow, hasToken = hasToken,
+    suggestStart = suggestStart,
+}
 
 handlers.greet = function(ctx, a, out, vars)
     if ctx.c.greeted then
@@ -1741,6 +1808,10 @@ local function handleExpectation(ctx, a, out, vars)
     if not e then return false end
     ctx.c.expect = nil
     local c = ctx.c
+    local hook = Dialogue.ExpectHooks[e.kind]
+    if hook then
+        return hook(ctx, a, out, vars, e) == true
+    end
     if BACK_OF[e.kind] then c.backIntent = BACK_OF[e.kind] end
     if e.back then c.backIntent = e.back end
     local strongOther = a.best and a.score >= 2.5 and not FOLLOWUPS[a.best] and a.best ~= 'ask_back'
@@ -1947,6 +2018,9 @@ function Dialogue.Respond(ctx, text)
     local vars = Dialogue.Vars(r, rel)
     local parts = {}
     local lastLine = c.lastLine
+    -- konuşma içinde kullanılanlar + NPC'nin (başka oyuncularla da) yakın zamanda söyledikleri tekrar seçilmez
+    local recent = SC.DGen and SC.DGen.RecentSet(r) or {}
+    local usedLookup = setmetatable({}, { __index = function(_, k) return c.used[k] or recent[k] end })
     local out = {
         dAff = 0, dTrust = 0, actions = {}, memories = {}, rel = {}, topics = c.topics,
         emotion = 'neutral', animation = 'none',
@@ -1963,7 +2037,7 @@ function Dialogue.Respond(ctx, text)
     function out.say(key, sub)
         local list = filterUsable(Dialogue.Bucket(key, r, rel.stage, sub), vars)
         if (not list or #list == 0) and sub then list = filterUsable(Dialogue.Bucket(key, r, rel.stage), vars) end
-        local line = pick(list, lastLine, c.used)
+        local line = pick(list, lastLine, usedLookup)
         remember(line)
         out.push(line)
         return line
@@ -1972,13 +2046,13 @@ function Dialogue.Respond(ctx, text)
     function out.sayTail(key, sub)
         if out.tail then return nil end
         local list = filterUsable(Dialogue.Bucket(key, r, rel.stage, sub), vars)
-        local line = pick(list, lastLine, c.used)
+        local line = pick(list, lastLine, usedLookup)
         remember(line)
         out.tail = line
         return line
     end
     function out.sayList(list)
-        local line = pick(filterUsable(list, vars), lastLine, c.used)
+        local line = pick(filterUsable(list, vars), lastLine, usedLookup)
         remember(line)
         out.push(line)
         return line
@@ -2114,7 +2188,7 @@ function Dialogue.Respond(ctx, text)
                 end
             end
             if Dialogue.Talkative(r) and (intent == 'how_are_you' or intent == 'ask_doing' or intent == 'greet') and math.random() < 0.35 and #parts < 3 then
-                local ch = pick(filterUsable(D.Lines.chatter.default, vars), nil, c.used)
+                local ch = pick(filterUsable(D.Lines.chatter.default, vars), nil, usedLookup)
                 if ch then
                     remember(ch)
                     parts[#parts + 1] = ch
@@ -2123,7 +2197,25 @@ function Dialogue.Respond(ctx, text)
         end
     end
 
+    -- v3: kişilik ve ruh hâli süsleri
+    if not c.hostage and #parts > 0 and SC.Persona then
+        local mood = SC.Persona.MoodLabel(r, rel, ctx.cid)
+        local st = SC.Persona.Stats(r)
+        if mood == 'tired' and FILLER_OK[intent] and out.tail and math.random() < 0.6 then
+            out.tail = nil   -- yorgunken karşı soru sormaz, kısa keser
+            if math.random() < 0.35 then parts[#parts + 1] = 'Biraz yorgunum da, kusura bakma.' end
+        end
+        if g ~= 'cold' and FILLER_OK[intent] and not out.tail and #parts < 3 and st.humor >= 60
+            and math.random() < ((Config.Intelligence and Config.Intelligence.HumorQuipChance) or 0.35) * st.humor / 100 then
+            local q = SC.DGen and SC.DGen.Compose('quip', r, rel, { vars = vars, used = usedLookup })
+            if q then parts[#parts + 1] = q end
+        end
+    end
+
     if out.tail then parts[#parts + 1] = out.tail end
+    if SC.DGen then
+        for _, p in ipairs(parts) do SC.DGen.Remember(r, p) end
+    end
     local filled = {}
     for _, p in ipairs(parts) do
         local f = Dialogue.Fill(p, vars)
@@ -2142,6 +2234,7 @@ function Dialogue.Respond(ctx, text)
         c.lastTopic = nil
     end
     out.intent = intent
+    out.canonical = (D.Canonical and D.Canonical[intent or '']) or (intent and intent:upper()) or 'UNKNOWN'
     out.analysis = a
     out.suggestions = Dialogue.Suggestions(ctx)
     return out
@@ -2202,9 +2295,39 @@ function Dialogue.Greeting(ctx, info)
         else
             key = 'greet'
         end
-        line = pick(filterUsable(Dialogue.Bucket(key, r, rel.stage), vars)) or '...'
+        -- v3: kategoriye özel selam kovası (ör. greet_entertainer)
+        local typed = SC.NPC and ('greet_' .. SC.NPC.Type(r):gsub('^adult_', ''))
+        if key == 'greet' and typed and D.Lines[typed] then key = typed end
+        local recentSet = SC.DGen and SC.DGen.RecentSet(r) or nil
+        -- v3: parçalardan dinamik selam (kişilik + ilişki + ruh hâli)
+        local G = Config.Dialogue.Generator or {}
+        if key == 'greet' and SC.DGen and G.Enabled ~= false and math.random() < (G.GreetingChance or 0.5) then
+            line = SC.DGen.Compose('greet', r, rel, { vars = vars, src = c.src })
+        end
+        if not line then
+            line = pick(filterUsable(Dialogue.Bucket(key, r, rel.stage), vars), nil, recentSet) or '...'
+            if SC.DGen then SC.DGen.Remember(r, line) end
+        end
         local extra
-        if not ctx.dry and g ~= 'cold' and g ~= 'stranger' and math.random() < 0.35 then
+        -- v3: ortam gözlemi — oyuncu yaralı/silahlıysa her zaman, yağmur/gece/çatışma/polis bazen
+        if not ctx.dry and g ~= 'cold' and SC.DGen and SC.Aware and c.src then
+            local cond = SC.DGen.Cond(r, rel, c.src)
+            local strong = cond.injured or cond.armed
+            local weak = cond.rain or cond.fight or cond.police or cond.night
+            if strong or (weak and math.random() < (G.AwarenessChance or 0.6)) then
+                extra = SC.DGen.Compose('aware', r, rel, { vars = vars, cond = cond })
+                if extra and cond.injured then emotion = 'surprised' end
+            end
+        end
+        -- v3: NPC'nin bekleyen teklifi (beraber gezerken önerdiği yer)
+        if not extra and not ctx.dry and SC.Context and ctx.cid then
+            local p = SC.Context.TakeProposal(r.id, ctx.cid, true)
+            if p and p.text then
+                extra = p.text
+                c.expect = { kind = 'npc_proposal', proposal = p }
+            end
+        end
+        if not extra and not ctx.dry and g ~= 'cold' and g ~= 'stranger' and math.random() < 0.35 then
             local good = Dialogue.FindCoded(r.id, ctx.cid, 1)
             if good and D.Recall[good.code] and (os.time() - (tonumber(good.created_at) or 0)) < 4 * 86400 then
                 extra = pick(D.Recall[good.code])
@@ -2225,12 +2348,14 @@ function Dialogue.Greeting(ctx, info)
 end
 
 -- Tek bir şablon kovasından doldurulmuş cümle (sub: alt kova, ör. rehine modu)
-function Dialogue.Line(key, r, rel, sub)
+function Dialogue.Line(key, r, rel, sub, extra)
     local vars = Dialogue.Vars(r, rel)
+    if type(extra) == 'table' then for k, v in pairs(extra) do vars[k] = v end end
     local list = filterUsable(Dialogue.Bucket(key, r, rel.stage, sub), vars)
     if (not list or #list == 0) and sub then list = filterUsable(Dialogue.Bucket(key, r, rel.stage), vars) end
-    local line = pick(list)
+    local line = pick(list, nil, SC.DGen and SC.DGen.RecentSet(r) or nil)
     if not line then return '...' end
+    if SC.DGen then SC.DGen.Remember(r, line) end
     return Dialogue.Capitalize(Dialogue.Fill(line, vars))
 end
 
@@ -2290,8 +2415,9 @@ function Dialogue.Ambient(r, rel)
     local g = Dialogue.StageGroup(rel.stage)
     local key = g == 'friend' and 'ambient_friend' or (g == 'cold' and 'ambient_cold' or 'ambient_known')
     local vars = Dialogue.Vars(r, rel)
-    local line = pick(filterUsable(D.Lines[key] and D.Lines[key].default, vars))
+    local line = pick(filterUsable(D.Lines[key] and D.Lines[key].default, vars), nil, SC.DGen and SC.DGen.RecentSet(r) or nil)
     if not line then return nil end
+    if SC.DGen then SC.DGen.Remember(r, line) end
     return Dialogue.Capitalize(Dialogue.Fill(line, vars))
 end
 
@@ -2322,6 +2448,11 @@ function Dialogue.Suggestions(ctx)
         add(S.yesno)
         return out
     end
+    if e and e.kind == 'npc_proposal' then add(S.proposal or S.yesno) end
+    if ctx.r and ctx.r.override and ctx.r.override.type == 'companion' and ctx.r.override.target == ctx.c.src then
+        add(S.companion, 2)
+    end
+    if rel.romance and rel.romance ~= 'none' then add(S.romance, 1) end
     if e and S.answer and S.answer[e.kind] then add(S.answer[e.kind], 3) end
     if c.lastTopic and S.followup and S.followup[c.lastTopic] then add(S.followup[c.lastTopic], 2) end
     local g = Dialogue.StageGroup(rel.stage)

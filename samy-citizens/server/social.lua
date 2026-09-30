@@ -27,17 +27,23 @@ function Social.Rebuild()
         if (order[kind] or 0) > (order[Social.links[a][b]] or 0) then Social.links[a][b] = kind end
         if (order[kind] or 0) > (order[Social.links[b][a]] or 0) then Social.links[b][a] = kind end
     end
+    -- v3: farklı NPC kategorileri (ör. normal sakin / yetişkin eğlence çalışanı) aynı sosyal ağa karışmaz
+    local function sameGroup(a, b)
+        return not SC.NPC or SC.NPC.Group(a) == SC.NPC.Group(b)
+    end
     for i, a in ipairs(Sim.List) do
         for j = i + 1, #Sim.List do
             local b = Sim.List[j]
+            if not sameGroup(a, b) then goto continue end
             if a.job and b.job and a.job.workplaceId and a.job.workplaceId == b.job.workplaceId then link(a.id, b.id, 'coworker') end
             local ha, hb = Sim.Locations[a.homeId], Sim.Locations[b.homeId]
             if ha and hb and (a.homeId == b.homeId or (Config.Social.NeighborAreaMatch and ha.area and ha.area ~= '' and ha.area == hb.area)) then
                 link(a.id, b.id, 'neighbor')
             end
+            ::continue::
         end
         for _, other in ipairs(a.acquaintances or {}) do
-            if Sim.Residents[other] then link(a.id, other, 'friend') end
+            if Sim.Residents[other] and sameGroup(a, Sim.Residents[other]) then link(a.id, other, 'friend') end
         end
     end
 end
@@ -164,6 +170,7 @@ function Social.Tick()
                 for j = i + 1, #list do
                     local a, b = list[i], list[j]
                     local chance = base * (Social.Relation(a.id, b.id) and 2.0 or 0.5)
+                    if SC.NPC and SC.NPC.Group(a) ~= SC.NPC.Group(b) then chance = 0 end
                     if math.random() < chance then Social.Chat(a, b) end
                 end
             end

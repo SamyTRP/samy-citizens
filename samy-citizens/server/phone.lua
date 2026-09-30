@@ -1,12 +1,11 @@
 --[[
     TELEFON / SMS
-    gksphone v2:
-      - NPC -> oyuncu : exports["gksphone"]:SendMessage(npcNumara, oyuncuNumara, mesaj, { skipSIMUsage, saveSenderCopy })
-      - oyuncu -> NPC : AddEventHandler("gksphone:messages:messageSent", data) (receiverNumber bir sakine aitse)
+    Telefon kaynağına özel çağrılar bridge/phone.lua'dadır (gksphone, lb-phone, npwd, qb-phone, custom, builtin;
+    'auto' ile otomatik algılama). Bu dosya sağlayıcıdan bağımsız SMS akışını yönetir:
     Her gelen mesaja bir cevap zamanı atanır: müsaitse birkaç saniye, işteyse/konuşuyorsa biraz daha geç,
     uyuyorsa uykulu bir cevap (Config.Phone.SleepMode). Yerleşik telefonda cevap öncesi "yazıyor..." görünür.
-    Yakın arkadaş NPC ara sıra kendiliğinden yazar (günde en fazla Config.Phone.ProactivePerDay).
-    Provider = 'builtin' ise yerleşik mini mesajlaşma arayüzü kullanılır.
+    Kendiliğinden mesaj: Config.Phone.Proactive.Smart = true ise server/npc_events.lua (son görüşme, ilişki,
+    kişilik, program, saat ve ruh hâline göre); false ise klasik yakın arkadaş mesajı (ProactivePerDay).
 ]]
 local Utils = SC.Utils
 local Clock = SC.Clock
@@ -26,9 +25,7 @@ end
 Phone.Normalize = norm
 
 function Phone.Enabled()
-    local p = Config.Phone.Provider
-    if p == 'gksphone' then return GetResourceState('gksphone') == 'started' end
-    return p == 'builtin'
+    return SC.PhoneBridge.Enabled()
 end
 
 function Phone.Rebuild()
@@ -36,18 +33,19 @@ function Phone.Rebuild()
     for _, r in ipairs(Sim.List) do
         if r.phone_number and r.phone_number ~= '' then Phone.byNumber[norm(r.phone_number)] = r.id end
     end
+    if SC.PhoneBridge then SC.PhoneBridge.RegisterNumbers() end
 end
 
 function Phone.GetPlayerNumber(src)
-    if Config.Phone.Provider == 'gksphone' and GetResourceState('gksphone') == 'started' then
-        local ok, num = pcall(function() return exports.gksphone:GetPhoneBySource(src) end)
-        if ok and num and tostring(num) ~= '' then return tostring(num) end
-    end
+    local num = SC.PhoneBridge.GetNumber(src)
+    if num and num ~= 'builtin' then return num end
     local ci = SC.Bridge.GetCharInfo(src)
     if ci and ci.phone then return tostring(ci.phone) end
-    if Config.Phone.Provider == 'builtin' then return 'builtin' end
-    return nil
+    if SC.PhoneBridge.BuiltinUI() then return 'builtin' end
+    return num
 end
+
+local function builtinUI() return SC.PhoneBridge.BuiltinUI() end
 
 local function storeMessage(npcId, cid, phone, direction, body, status)
     MySQL.insert([[INSERT INTO samy_citizens_messages (npc_id, citizenid, player_phone, direction, body, status, created_at)
@@ -57,46 +55,22 @@ end
 -- ---------------------------------------------------------------------
 -- Gönderim (NPC -> oyuncu)
 -- ---------------------------------------------------------------------
+local function meta(r, cid, extra)
+    return { cid = cid, npcId = r.id, npcName = r.firstname .. ' ' .. r.lastname, extra = extra }
+end
+
 function Phone.SendToPlayer(r, cid, playerPhone, text, src, extra)
     if not Phone.Enabled() or not text or text == '' then return false end
     storeMessage(r.id, cid, playerPhone, 'out', text, 'sent')
     SC.Log.Conversation(r.id, cid, nil, 'sms', 'npc', text)
-    local provider = Config.Phone.Provider
-    if provider == 'gksphone' then
-        if not playerPhone or playerPhone == '' or not r.phone_number then return false end
-        local ok, res = pcall(function()
-            return exports.gksphone:SendMessage(r.phone_number, playerPhone, text, { skipSIMUsage = true, saveSenderCopy = false })
-        end)
-        if not ok or (type(res) == 'table' and res.status == false) then
-            SC.DebugPrint('gksphone SendMessage hatası:', ok and tostring(res and res.error) or tostring(res))
-            return false
-        end
-        return true
-    elseif provider == 'builtin' then
-        local target = src or SC.Bridge.GetSourceByCitizenId(cid)
-        if target then
-            local payload = {
-                npcId = r.id, name = r.firstname .. ' ' .. r.lastname, number = r.phone_number,
-                text = text, at = os.time(), direction = 'in',
-            }
-            for k, v in pairs(extra or {}) do payload[k] = v end
-            TriggerClientEvent('samy-citizens:client:phoneMessage', target, payload)
-        end
-        return true
-    end
-    return false
+    local target = src or SC.Bridge.GetSourceByCitizenId(cid)
+    return SC.PhoneBridge.Send(r.phone_number, playerPhone, text, target, meta(r, cid, extra))
 end
 
 function Phone.SendLocation(r, cid, playerPhone, loc, src)
-    if Config.Phone.Provider == 'gksphone' then
-        if not playerPhone or not r.phone_number then return end
-        pcall(function()
-            exports.gksphone:SendMessage(r.phone_number, playerPhone, vector2(loc.door.x, loc.door.y), { skipSIMUsage = true, saveSenderCopy = false })
-        end)
-        storeMessage(r.id, cid, playerPhone, 'out', L('sms_location', loc.label), 'sent')
-    else
-        Phone.SendToPlayer(r, cid, playerPhone, L('sms_location', loc.label), src, { location = { x = loc.door.x, y = loc.door.y, label = loc.label } })
-    end
+    storeMessage(r.id, cid, playerPhone, 'out', L('sms_location', loc.label), 'sent')
+    local target = src or SC.Bridge.GetSourceByCitizenId(cid)
+    SC.PhoneBridge.SendLocation(r.phone_number, playerPhone, loc.door.x, loc.door.y, loc.label, target, meta(r, cid))
 end
 
 function Phone.SendIntro(r, cid, src, rel)
@@ -158,17 +132,7 @@ function Phone.OnIncoming(npcId, src, playerPhone, text)
     while #p.msgs > (Config.Phone.MaxPendingPerThread or 5) do table.remove(p.msgs, 1) end
 end
 
-AddEventHandler('gksphone:messages:messageSent', function(data)
-    if Config.Phone.Provider ~= 'gksphone' or type(data) ~= 'table' then return end
-    if data.receiverSource then return end
-    local rid = Phone.byNumber[norm(data.receiverNumber)]
-    if not rid then return end
-    local src = tonumber(data.senderSource)
-    if not src or src <= 0 then return end
-    local msg = data.message
-    if type(msg) ~= 'string' then msg = L('sms_location_shared') end
-    Phone.OnIncoming(rid, src, tostring(data.senderNumber or ''), msg)
-end)
+-- (gelen mesaj dinleyicileri bridge/phone.lua'da: sağlayıcıya göre SC.PhoneBridge.Incoming -> Phone.OnIncoming)
 
 -- ---------------------------------------------------------------------
 -- Cevaplama
@@ -247,6 +211,20 @@ local function threadState(key)
     return t
 end
 
+-- v3: SMS konuşma durumu (NPC kendiliğinden davet ettiğinde cevabı beklemek için)
+function Phone.Thread(npcId, cid)
+    return threadState(npcId .. '|' .. cid)
+end
+
+-- Süresi dolmuş SMS konuşma durumlarını temizle (RAM)
+function Phone.CleanupThreads()
+    local now = os.time()
+    local ttl = (Config.Phone.ThreadMemoryMinutes or 30) * 60
+    for k, t in pairs(threads) do
+        if now - (t.at or 0) > ttl then threads[k] = nil end
+    end
+end
+
 function Phone.Reply(r, p)
     local rel = SC.Rel.Get(r.id, p.cid)
     local src = SC.Bridge.GetSourceByCitizenId(p.cid) or p.src
@@ -274,11 +252,15 @@ function Phone.Reply(r, p)
     else
         local c = threadState(r.id .. '|' .. p.cid)
         c.playerMsgs = c.playerMsgs + 1
+        c.src = src
+        c.charInfo = ci
         local res = SC.Dialogue.Respond({ r = r, rel = rel, c = c, cid = p.cid, channel = 'sms', playerFirst = playerFirst }, text)
         reply = res.reply
         SC.Dialogue.ApplyRelUpdates(rel, res.rel)
         SC.Rel.ApplyDelta(rel, res.dAff, res.dTrust)
         SC.Rel.AddFamiliarity(rel, 1)
+        if SC.RelXP and (res.dAff or 0) >= 0 then SC.RelXP.Add(rel, 'phone_chat', { r = r }) end
+        if SC.Context then SC.Context.RecordTurn(r.id, p.cid, text, reply, res.canonical or res.intent, c.lastTopic) end
         for _, m in ipairs(res.memories or {}) do
             SC.Memory.Add(r.id, p.cid, m.text, m.importance or 3, m.type or 'conversation', {
                 valence = m.valence or 0, shareable = m.shareable == true, data = m.data,
@@ -301,7 +283,7 @@ function Phone.Reply(r, p)
     local first, second = reply:match('^(.-[%.!%?]+)%s+(.+)$')
     if Config.Phone.SplitLongReplies ~= false and first and Utils.Utf8Len(reply) > 55 and math.random() < 0.45 then
         Phone.SendToPlayer(r, p.cid, phone, SC.Dialogue.SmsStyle(first, r, rel), src)
-        if src and Config.Phone.Provider == 'builtin' then TriggerClientEvent('samy-citizens:client:phoneTyping', src, r.id, true) end
+        if src and builtinUI() then TriggerClientEvent('samy-citizens:client:phoneTyping', src, r.id, true) end
         SetTimeout(1500 + math.random(0, 2000), function()
             Phone.SendToPlayer(r, p.cid, phone, SC.Dialogue.SmsStyle(second, r, rel), src)
         end)
@@ -370,7 +352,7 @@ function Phone.Tick()
                     local ok, err = pcall(Phone.Reply, r, p)
                     if not ok then print(('^1[samy-citizens] SMS cevap hatası: %s^7'):format(tostring(err))) end
                 end)
-            elseif not p.typingSent and p.replyAt - nowMs <= 3000 and Config.Phone.Provider == 'builtin' then
+            elseif not p.typingSent and p.replyAt - nowMs <= 3000 and builtinUI() then
                 p.typingSent = true
                 local src = SC.Bridge.GetSourceByCitizenId(p.cid) or p.src
                 if src then TriggerClientEvent('samy-citizens:client:phoneTyping', src, r.id, true) end
@@ -379,7 +361,9 @@ function Phone.Tick()
     end
 
     local now = os.time()
-    if Config.Phone.ProactiveEnabled and now - lastProactive >= PROACTIVE_EVERY then
+    -- akıllı kendiliğinden mesaj açıksa server/npc_events.lua yönetir
+    local smart = Config.Phone.Proactive and Config.Phone.Proactive.Smart
+    if Config.Phone.ProactiveEnabled and not smart and now - lastProactive >= PROACTIVE_EVERY then
         lastProactive = now
         local tickSec = PROACTIVE_EVERY
         local hourSec = Clock.GameMinutesToRealSeconds(60)
@@ -399,7 +383,7 @@ end
 -- Yerleşik (builtin) mini mesajlaşma
 -- ---------------------------------------------------------------------
 lib.callback.register('samy-citizens:phone:contacts', function(src)
-    if Config.Phone.Provider ~= 'builtin' then return false end
+    if not builtinUI() then return false end
     local cid = SC.Bridge.GetCitizenId(src)
     if not cid then return {} end
     local rels = SC.Rel.ListForCitizen(cid)
@@ -420,7 +404,7 @@ lib.callback.register('samy-citizens:phone:contacts', function(src)
 end)
 
 lib.callback.register('samy-citizens:phone:thread', function(src, npcId)
-    if Config.Phone.Provider ~= 'builtin' or type(npcId) ~= 'string' then return false end
+    if not builtinUI() or type(npcId) ~= 'string' then return false end
     local cid = SC.Bridge.GetCitizenId(src)
     if not cid then return {} end
     local rows = MySQL.query.await([[SELECT direction, body, created_at FROM samy_citizens_messages
@@ -434,7 +418,7 @@ end)
 
 RegisterNetEvent('samy-citizens:server:phoneSend', function(npcId, text)
     local src = source
-    if Config.Phone.Provider ~= 'builtin' or type(npcId) ~= 'string' or type(text) ~= 'string' then return end
+    if not builtinUI() or type(npcId) ~= 'string' or type(text) ~= 'string' then return end
     local r = Sim.Residents[npcId]
     local cid = SC.Bridge.GetCitizenId(src)
     if not r or not cid then return end

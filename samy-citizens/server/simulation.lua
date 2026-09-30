@@ -287,12 +287,20 @@ end
 Sim.ResolveTime = resolveTime
 
 function Sim.GetRoutineBlocks(r, day)
+    local wd = Clock.WeekdayForDay(day)
+    -- v3: sakine özel gün planı (profile.schedule['1'..'7'])
+    local sch = type(r.profile) == 'table' and type(r.profile.schedule) == 'table' and r.profile.schedule or nil
+    if sch then
+        local d = sch[tostring(wd)] or sch[wd]
+        if type(d) == 'table' and #d > 0 then
+            return d, Utils.Contains(r.job and r.job.workdays or {}, wd)
+        end
+    end
     local routine = Sim.Routines[r.routine_id or ''] or Sim.Routines['day_worker']
     if not routine then
         for _, rt in pairs(Sim.Routines) do routine = rt break end
     end
     if not routine then return {}, false end
-    local wd = Clock.WeekdayForDay(day)
     if type(routine.days) == 'table' then
         local d = routine.days[wd] or routine.days[tostring(wd)]
         if type(d) == 'table' and #d > 0 then return d, true end
@@ -352,13 +360,14 @@ local function buildRaw(r, day)
     for _, b in ipairs(blocks) do
         local f = resolveTime(b.from, shift)
         local t = resolveTime(b.to, shift)
-        if f and t and b.activity then
+        local hasAlt = type(b.alt) == 'table' and #b.alt > 0
+        if f and t and (b.activity or hasAlt) then
             while f < prevFrom do f = f + 1440 end
             while t <= f do t = t + 1440 end
-            local def = Activities[b.activity]
+            local def = Activities[b.activity or '']
             segs[#segs + 1] = {
-                from = f, to = t, activity = b.activity, location = b.location or 'home',
-                firm = b.firm or (def and def.firm) or false, roam = b.roam,
+                from = f, to = t, activity = b.activity or 'free', location = b.location or 'home',
+                firm = b.firm or (def and def.firm) or false, roam = b.roam, alt = hasAlt and b.alt or nil,
             }
             prevFrom = f
         end
@@ -606,11 +615,43 @@ end
     Segmenti somut { activity, loc }'a çevirir. Esnek segmentler bir kez çözülüp saklanır;
     uzak gelecekteki segmentler için tentative = true ile saklamadan tahmin edilir.
 ]]
+-- v3: ağırlıklı alternatif ('alt') seçimi — deterministik (sakin + segment tohumlu)
+-- kısaltma: 'bar' -> içki (fav bar), 'restaurant' -> yemek, 'home' -> evde; tablo: { activity, location, weight }
+function Sim.PickAlt(r, seg, alt)
+    local rng = Utils.Rng(Utils.Hash(r.id .. ':alt:' .. tostring(seg.from)))
+    local n = #alt
+    local opts = {}
+    for i, o in ipairs(alt) do
+        if type(o) == 'string' then
+            local map = (Config.Schedule and Config.Schedule.AltTypeActivity) or {}
+            local act = map[o] or (o == 'home' and 'home_idle') or 'leisure'
+            local loc
+            if o == 'home' then
+                loc = 'home'
+            elseif o == 'work' then
+                loc, act = 'work', map.work or 'work'
+            elseif Sim.Locations[o] then
+                loc = o
+            else
+                loc = 'types:' .. (o == 'restaurant' and 'restaurant,fastfood' or o)
+            end
+            opts[#opts + 1] = { weight = n - i + 1, activity = act, location = loc }
+        elseif type(o) == 'table' and (o.activity or o.location) then
+            opts[#opts + 1] = { weight = tonumber(o.weight) or 1, activity = o.activity or 'leisure', location = o.location or 'home' }
+        end
+    end
+    local pick = Utils.WeightedPick(opts, rng)
+    if not pick then return seg.activity, seg.location or 'home' end
+    return pick.activity, pick.location
+end
+
 function Sim.Resolve(r, seg, now, tentative)
     local target = seg.origin or seg
     if target.resolved then return target.resolved end
     if seg.resolved then return seg.resolved end
     local act, spec = seg.activity, seg.location or 'home'
+    local alt = target.alt or seg.alt
+    if type(alt) == 'table' and #alt > 0 then act, spec = Sim.PickAlt(r, target, alt) end
     local locId
     if spec == 'home' then
         locId = r.homeId
@@ -620,6 +661,13 @@ function Sim.Resolve(r, seg, now, tentative)
         act, locId = Sim.ResolveFlex(r, seg, spec:sub(6), now)
     elseif spec:sub(1, 4) == 'fav:' then
         locId = Sim.PickFavorite(r, spec:sub(5))
+    elseif spec:sub(1, 6) == 'types:' then
+        local types = {}
+        for t in spec:sub(7):gmatch('[^,]+') do types[#types + 1] = t end
+        local home = Sim.Locations[r.homeId]
+        local rng = Utils.Rng(Utils.Hash(r.id .. ':types:' .. tostring(target.from)))
+        local loc = Sim.PickPlace(r, types, home and home.door, 3500.0, math.floor(target.from or now) % 1440, rng)
+        locId = loc and loc.id or nil
     else
         locId = spec
     end
@@ -652,6 +700,7 @@ end
 function Sim.Changed(r, reason)
     r.dirty = true
     if SC.Spawner then SC.Spawner.OnStateChanged(r, reason) end
+    if SC.State then SC.State.Refresh(r, reason) end
 end
 
 function Sim.Depart(r, seg, res, now)
@@ -731,7 +780,8 @@ function Sim.ClearOverride(r, reason)
     local ov = r.override
     if not ov then return end
     r.override = nil
-    if ov.type == 'follow' or ov.type == 'flee' or ov.type == 'meet' or ov.type == 'handsup' or ov.type == 'cower' or ov.type == 'hostage' then
+    if ov.type == 'follow' or ov.type == 'flee' or ov.type == 'meet' or ov.type == 'handsup' or ov.type == 'cower' or ov.type == 'hostage'
+        or ov.type == 'companion' then
         local pos = SC.Spawner and SC.Spawner.GetPedCoords(r)
         if pos then
             Sim.ReleasePoint(r)
@@ -813,7 +863,7 @@ function Sim.UpdateNeeds(r, dt, now)
     if dt <= 0 then return end
     local act = r.state and r.state.activity or 'idle'
     if r.status == 'hospital' then act = 'hospital' end
-    if r.override and r.override.type == 'follow' then act = 'follow' end
+    if r.override and (r.override.type == 'follow' or r.override.type == 'companion') then act = 'follow' end
     local def = Activities[act] or Activities.idle
     local h = dt / 60
     local n = r.needs
@@ -981,6 +1031,8 @@ function Sim.AddResident(data)
     for _, k in ipairs({ 'energy', 'hunger', 'social', 'fun' }) do r.needs[k] = tonumber(r.needs[k]) or 50 end
     r.mood = tonumber(r.mood) or 0
     r.personality = r.personality or {}
+    r.profile = type(r.profile) == 'table' and r.profile or {}
+    if type(r.profile.type) ~= 'string' or not Config.NPCTypes[r.profile.type] then r.profile.type = 'citizen' end
     r.job = r.job or {}
     r.plans = {}
     r.moodEvents = {}
@@ -1122,7 +1174,32 @@ function Sim.TickResident(r, now, dt)
             return
         end
     end
-    if res.activity ~= st.activity then Sim.SetActivity(r, res.activity, now) end
+    if res.activity ~= st.activity then
+        Sim.SetActivity(r, res.activity, now)
+        return
+    end
+    -- v3: 'wander' aktivitelerde (parkta dolaşma, kulüpte gezinme) ara sıra başka bir noktaya yürür
+    local def = Activities[st.activity]
+    if def and def.wander and st.pointIndex and not st.inside and SC.Spawner and SC.Spawner.peds[r.id] then
+        local W = (Config.Schedule and Config.Schedule.WanderMinutes) or { 25, 60 }
+        if not st.wanderAt then st.wanderAt = now + math.random(W[1] or 25, W[2] or 60) end
+        if now >= st.wanderAt then
+            st.wanderAt = now + math.random(W[1] or 25, W[2] or 60)
+            local loc = Sim.Locations[st.locationId]
+            local occ = loc and Sim.Occupancy[loc.id]
+            local old = st.pointIndex
+            if loc and occ then
+                if occ[old] == r.id then occ[old] = nil end
+                local idx = Sim.AssignPoint(r, loc, st.activity)
+                if idx and idx ~= old then
+                    st.pointIndex = idx
+                    Sim.Changed(r, 'wander')
+                elseif not idx then
+                    occ[old] = r.id
+                end
+            end
+        end
+    end
 end
 
 function Sim.Tick()

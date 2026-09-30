@@ -5,6 +5,10 @@
     needs    : oyun saati başına ihtiyaç değişimi (energy/social/fun artı = iyi, hunger artı = acıkma)
     busy     : NPC meşgul sayılır (kısa konuşur, SMS'e geç döner)
     scenario : noktada senaryo tanımlı değilse kullanılacak varsayılan GTA senaryosu
+    wander   : true ise NPC bu aktivitede Config.Schedule.WanderMinutes aralığıyla aynı konumdaki başka bir
+               uygun noktaya yürür (parkta dolaşma, kulüpte masalar arası gezinme)
+    anims    : nokta etiketine göre senaryo yerine oynatılacak animasyon { tag = { dict, anim } }
+    adultAnims : true ise anims sadece Config.AdultNPC.Enabled iken kullanılır
 ]]
 SC.Activities = {
     sleep       = { inside = true, needs = { energy = 13, hunger = 2, social = -0.5, fun = 0 }, sleeping = true },
@@ -17,7 +21,7 @@ SC.Activities = {
     eat         = { tags = { 'eat', 'coffee' }, needs = { hunger = -45, energy = 3, social = 4, fun = 3 }, scenario = 'WORLD_HUMAN_AA_COFFEE' },
     coffee      = { tags = { 'coffee', 'eat' }, needs = { hunger = -12, energy = 6, social = 5, fun = 4 }, scenario = 'WORLD_HUMAN_AA_COFFEE' },
     drink       = { tags = { 'drink', 'socialize' }, needs = { energy = -3, hunger = 3, social = 12, fun = 9 }, scenario = 'WORLD_HUMAN_DRINKING' },
-    leisure     = { tags = { 'leisure', 'walk' }, needs = { energy = -2, hunger = 4, social = 2, fun = 9 }, scenario = 'WORLD_HUMAN_TOURIST_MOBILE' },
+    leisure     = { tags = { 'leisure', 'walk' }, wander = true, needs = { energy = -2, hunger = 4, social = 2, fun = 9 }, scenario = 'WORLD_HUMAN_TOURIST_MOBILE' },
     exercise    = { tags = { 'exercise' }, needs = { energy = -9, hunger = 8, social = 2, fun = 7 }, scenario = 'WORLD_HUMAN_JOG_STANDING' },
     shopping    = { tags = { 'shopping' }, inside = true, needs = { energy = -3, hunger = 4, social = 2, fun = 5 }, scenario = 'WORLD_HUMAN_WINDOW_SHOP_BROWSE' },
     fish        = { tags = { 'fish' }, busy = false, needs = { energy = -2, hunger = 4, social = 1, fun = 10 }, scenario = 'WORLD_HUMAN_STAND_FISHING' },
@@ -25,6 +29,12 @@ SC.Activities = {
     appointment = { tags = { 'wait', 'idle', 'leisure' }, neverInside = true, needs = { energy = -2, hunger = 3, social = 8, fun = 5 }, scenario = 'WORLD_HUMAN_STAND_IMPATIENT' },
     hospital    = { inside = true, needs = { energy = 4, hunger = 2, social = -3, fun = -4 } },
     follow      = { needs = { energy = -3, hunger = 4, social = 8, fun = 5 } },
+    -- v3: eğlence çalışanı (Vanilla Unicorn vb.); direk ve dans pisti noktalarında animasyon, diğerlerinde senaryo
+    entertain   = { tags = { 'pole', 'dance_floor', 'wait', 'smoke' }, busy = true, firm = true, wander = true,
+                    needs = { energy = -5, hunger = 5, social = 6, fun = 3 }, scenario = 'WORLD_HUMAN_PARTYING',
+                    anims = { pole = { 'mini@strip_club@pole_dance@pole_dance1', 'pd_dance_01' },
+                              dance_floor = { 'mini@strip_club@idles@stripper', 'stripper_idle_02' } },
+                    adultAnims = true },
 }
 
 -- Rutin şablonlarında kullanılabilen "esnek" aktiviteler (gün içinde ihtiyaca göre çözülür)
@@ -41,7 +51,7 @@ SC.LeisureTypes = {
     fish = { 'pier' },
 }
 
-SC.LocationTypes = { 'home', 'work', 'cafe', 'restaurant', 'fastfood', 'bar', 'gym', 'park', 'beach', 'shop', 'pier', 'hospital', 'office', 'school', 'garage', 'depot', 'other' }
+SC.LocationTypes = { 'home', 'work', 'cafe', 'restaurant', 'fastfood', 'bar', 'club', 'gym', 'park', 'beach', 'shop', 'pier', 'hospital', 'office', 'school', 'garage', 'depot', 'other' }
 
 -- Konuşma sırasındaki hareketler
 SC.Gestures = {

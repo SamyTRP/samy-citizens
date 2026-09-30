@@ -1,5 +1,6 @@
 -- samy-citizens veritabanı şeması
 -- Kaynak başlarken otomatik çalıştırılır (CREATE TABLE IF NOT EXISTS); elle de içe aktarabilirsin.
+-- Eski kurulumlar: eksik sütun/indeksler server/db.lua tarafından otomatik eklenir (elle yapmak için sql/upgrade_v3.sql).
 
 CREATE TABLE IF NOT EXISTS `samy_citizens_residents` (
   `id` VARCHAR(50) NOT NULL,
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS `samy_citizens_residents` (
   `status` VARCHAR(20) NOT NULL DEFAULT 'alive',
   `status_until` BIGINT NOT NULL DEFAULT 0,
   `state` LONGTEXT NULL,
+  `profile` LONGTEXT NULL,
   `enabled` TINYINT(1) NOT NULL DEFAULT 1,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -78,9 +80,17 @@ CREATE TABLE IF NOT EXISTS `samy_citizens_relationships` (
   `proactive_date` VARCHAR(16) NULL,
   `proactive_count` INT NOT NULL DEFAULT 0,
   `last_decay_day` VARCHAR(16) NULL,
+  `xp` INT NOT NULL DEFAULT 0,
+  `romance` VARCHAR(16) NOT NULL DEFAULT 'none',
+  `first_met` BIGINT NOT NULL DEFAULT 0,
+  `last_contact` BIGINT NOT NULL DEFAULT 0,
+  `daily_xp` INT NOT NULL DEFAULT 0,
+  `stats` LONGTEXT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`npc_id`, `citizenid`),
-  KEY `idx_citizen` (`citizenid`)
+  KEY `idx_citizen` (`citizenid`),
+  KEY `idx_npc_phone` (`npc_id`, `phone_known`),
+  KEY `idx_citizen_romance` (`citizenid`, `romance`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `samy_citizens_memories` (

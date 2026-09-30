@@ -55,6 +55,11 @@ end)
 -- ---------------------------------------------------------------------
 -- Sunucunun konum düzeltme istekleri (spawn öncesi zemine/yola/navmesh'e oturtma)
 -- ---------------------------------------------------------------------
+-- vis: nokta şu an bu oyuncunun ekranında mı (sunucu, göz önünde aniden ped belirmesin diye spawn'ı erteleyebilir)
+local function visible(x, y, z)
+    return IsSphereVisible(x + 0.0, y + 0.0, z + 1.0, 1.2) and #(GetEntityCoords(cache.ped) - vector3(x, y, z)) < 120.0
+end
+
 lib.callback.register('samy-citizens:snap', function(req)
     if type(req) ~= 'table' or type(req.x) ~= 'number' then return nil end
     local x, y, z = req.x + 0.0, req.y + 0.0, req.z + 0.0
@@ -66,16 +71,16 @@ lib.callback.register('samy-citizens:snap', function(req)
                 local fx, fy = -math.sin(rad), math.cos(rad)
                 if fx * (req.dx - pos.x) + fy * (req.dy - pos.y) < 0 then heading = (heading + 180.0) % 360.0 end
             end
-            return { x = pos.x, y = pos.y, z = pos.z, h = heading }
+            return { x = pos.x, y = pos.y, z = pos.z, h = heading, vis = visible(pos.x, pos.y, pos.z) }
         end
         return nil
     elseif req.mode == 'ped' then
         local ok, safe = GetSafeCoordForPed(x, y, z, true, 16)
-        if ok and safe then return { x = safe.x, y = safe.y, z = safe.z } end
+        if ok and safe then return { x = safe.x, y = safe.y, z = safe.z, vis = visible(safe.x, safe.y, safe.z) } end
     end
     local found, gz = GetGroundZFor_3dCoord(x, y, z + 2.0, false)
-    if found and math.abs(gz - z) < 6.0 then return { x = x, y = y, z = gz } end
-    return { x = x, y = y, z = z }
+    if found and math.abs(gz - z) < 6.0 then return { x = x, y = y, z = gz, vis = visible(x, y, gz) } end
+    return { x = x, y = y, z = z, vis = visible(x, y, z) }
 end)
 
 -- Sunucunun saat/hava örneklemesi
@@ -143,6 +148,21 @@ CreateThread(function()
             end,
         },
         {
+            -- v3: beraber gezerken NPC'nin önerisini (kahve, sahil, bar...) kabul et
+            name = 'samy_citizens_proposal',
+            icon = 'fa-solid fa-circle-check',
+            label = L('target_proposal'),
+            distance = 4.0,
+            canInteract = function(entity)
+                if not Client.IsResidentPed(entity) then return false end
+                local p = Entity(entity).state.scProposal
+                return type(p) == 'table' and p.to == cache.serverId
+            end,
+            onSelect = function(data)
+                TriggerServerEvent('samy-citizens:server:acceptProposal', NetworkGetNetworkIdFromEntity(data.entity))
+            end,
+        },
+        {
             name = 'samy_citizens_gift',
             icon = 'fa-solid fa-gift',
             label = L('target_gift'),
@@ -161,7 +181,7 @@ end)
 AddEventHandler('onResourceStop', function(res)
     if res ~= GetCurrentResourceName() then return end
     if GetResourceState('ox_target') == 'started' then
-        exports.ox_target:removeGlobalPed({ 'samy_citizens_talk', 'samy_citizens_hostage', 'samy_citizens_gift' })
+        exports.ox_target:removeGlobalPed({ 'samy_citizens_talk', 'samy_citizens_hostage', 'samy_citizens_gift', 'samy_citizens_proposal' })
     end
     SetNuiFocus(false, false)
 end)

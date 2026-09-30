@@ -42,7 +42,35 @@ local UPGRADE_COLUMNS = {
     { 'samy_citizens_residents', 'acquaintances', 'LONGTEXT NULL' },
     { 'samy_citizens_residents', 'topics', 'LONGTEXT NULL' },
     { 'samy_citizens_memories', 'data', 'TEXT NULL' },
+    -- v3: yaşayan NPC katmanı
+    { 'samy_citizens_residents', 'profile', 'LONGTEXT NULL' },
+    { 'samy_citizens_relationships', 'xp', 'INT NOT NULL DEFAULT 0' },
+    { 'samy_citizens_relationships', 'romance', "VARCHAR(16) NOT NULL DEFAULT 'none'" },
+    { 'samy_citizens_relationships', 'first_met', 'BIGINT NOT NULL DEFAULT 0' },
+    { 'samy_citizens_relationships', 'last_contact', 'BIGINT NOT NULL DEFAULT 0' },
+    { 'samy_citizens_relationships', 'daily_xp', 'INT NOT NULL DEFAULT 0' },
+    { 'samy_citizens_relationships', 'stats', 'LONGTEXT NULL' },
 }
+
+local UPGRADE_INDEXES = {
+    { 'samy_citizens_relationships', 'idx_npc_phone', '(`npc_id`, `phone_known`)' },
+    { 'samy_citizens_relationships', 'idx_citizen_romance', '(`citizenid`, `romance`)' },
+}
+
+-- Sütun yeni eklendiyse çalışan tek seferlik veri dönüşümleri (eski kurulumlar aşama kaybetmesin)
+local function backfill(tbl, col)
+    if tbl ~= 'samy_citizens_relationships' then return end
+    if col == 'xp' then
+        local levels = {}
+        for _, lv in ipairs((Config.Relationship.XP and Config.Relationship.XP.Levels) or {}) do levels[lv.id] = math.floor(lv.min or 0) end
+        MySQL.query.await([[UPDATE samy_citizens_relationships SET xp = CASE stage
+            WHEN 'acquaintance' THEN ? WHEN 'friend' THEN ? WHEN 'close_friend' THEN ? ELSE 0 END WHERE xp = 0]],
+            { levels.acquaintance or 100, levels.friend or 300, levels.close_friend or 700 })
+        print('^3[samy-citizens] mevcut ilişkilere aşamalarına göre XP verildi^7')
+    elseif col == 'first_met' then
+        MySQL.query.await('UPDATE samy_citizens_relationships SET first_met = UNIX_TIMESTAMP(created_at) WHERE first_met = 0')
+    end
+end
 
 function DB.EnsureColumns()
     for _, c in ipairs(UPGRADE_COLUMNS) do
@@ -51,6 +79,20 @@ function DB.EnsureColumns()
         if (tonumber(exists) or 0) == 0 then
             MySQL.query.await(('ALTER TABLE `%s` ADD COLUMN `%s` %s'):format(c[1], c[2], c[3]))
             print(('^3[samy-citizens] sütun eklendi: %s.%s^7'):format(c[1], c[2]))
+            local ok, err = pcall(backfill, c[1], c[2])
+            if not ok then print(('^1[samy-citizens] veri dönüşümü hatası (%s): %s^7'):format(c[2], tostring(err))) end
+        end
+    end
+    for _, ix in ipairs(UPGRADE_INDEXES) do
+        local exists = MySQL.scalar.await([[SELECT COUNT(*) FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?]], { ix[1], ix[2] })
+        if (tonumber(exists) or 0) == 0 then
+            local ok, err = pcall(MySQL.query.await, ('ALTER TABLE `%s` ADD INDEX `%s` %s'):format(ix[1], ix[2], ix[3]))
+            if ok then
+                print(('^3[samy-citizens] indeks eklendi: %s.%s^7'):format(ix[1], ix[2]))
+            else
+                print(('^1[samy-citizens] indeks eklenemedi (%s): %s^7'):format(ix[2], tostring(err)))
+            end
         end
     end
 end
@@ -133,6 +175,7 @@ local function residentParams(r, phone)
         s(r.routine_id),
         s(phone),
         json.encode(r.topics or {}),
+        json.encode(r.profile or {}),
     }
 end
 
@@ -159,13 +202,21 @@ function DB.Seed()
             local phone = r.phone_number or genPhone(r.id, taken)
             MySQL.prepare.await([[INSERT IGNORE INTO samy_citizens_residents
                 (id, firstname, lastname, age, gender, model, appearance, voice_id, personality, backstory, job, home_id,
-                 vehicle, favorite_places, acquaintances, routine_id, phone_number, topics)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]], residentParams(r, phone))
-        elseif r.topics then
-            -- önceki sürümden kalan kayıtlara konuşma konularını ekle (elle düzenlenmişse dokunma)
-            MySQL.prepare.await([[UPDATE samy_citizens_residents SET topics = ?
-                WHERE id = ? AND (topics IS NULL OR topics = '' OR topics = 'null' OR topics = '[]' OR topics = '{}')]],
-                { json.encode(r.topics), r.id })
+                 vehicle, favorite_places, acquaintances, routine_id, phone_number, topics, profile)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]], residentParams(r, phone))
+        else
+            if r.topics then
+                -- önceki sürümden kalan kayıtlara konuşma konularını ekle (elle düzenlenmişse dokunma)
+                MySQL.prepare.await([[UPDATE samy_citizens_residents SET topics = ?
+                    WHERE id = ? AND (topics IS NULL OR topics = '' OR topics = 'null' OR topics = '[]' OR topics = '{}')]],
+                    { json.encode(r.topics), r.id })
+            end
+            if r.profile then
+                -- v3 profili (kişilik puanları, sevdikleri, rutin alternatifleri...) boş kayıtlara eklenir
+                MySQL.prepare.await([[UPDATE samy_citizens_residents SET profile = ?
+                    WHERE id = ? AND (profile IS NULL OR profile = '' OR profile = 'null' OR profile = '[]' OR profile = '{}')]],
+                    { json.encode(r.profile), r.id })
+            end
         end
     end
 end
@@ -209,6 +260,7 @@ function DB.DecodeResident(row)
         favorite_places = Utils.JsonDecode(row.favorite_places) or {},
         acquaintances = Utils.JsonDecode(row.acquaintances) or {},
         topics = type(Utils.JsonDecode(row.topics)) == 'table' and Utils.JsonDecode(row.topics) or {},
+        profile = type(Utils.JsonDecode(row.profile)) == 'table' and Utils.JsonDecode(row.profile) or {},
         routine_id = nilIfEmpty(row.routine_id),
         phone_number = nilIfEmpty(row.phone_number),
         needs = Utils.JsonDecode(row.needs),
@@ -254,13 +306,14 @@ function DB.UpsertResident(r)
     params[#params + 1] = r.enabled == false and 0 or 1
     return MySQL.prepare.await([[INSERT INTO samy_citizens_residents
         (id, firstname, lastname, age, gender, model, appearance, voice_id, personality, backstory, job, home_id,
-         vehicle, favorite_places, acquaintances, routine_id, phone_number, topics, enabled)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         vehicle, favorite_places, acquaintances, routine_id, phone_number, topics, profile, enabled)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE firstname = VALUES(firstname), lastname = VALUES(lastname), age = VALUES(age),
         gender = VALUES(gender), model = VALUES(model), appearance = VALUES(appearance), voice_id = VALUES(voice_id),
         personality = VALUES(personality), backstory = VALUES(backstory), job = VALUES(job), home_id = VALUES(home_id),
         vehicle = VALUES(vehicle), favorite_places = VALUES(favorite_places), acquaintances = VALUES(acquaintances),
-        routine_id = VALUES(routine_id), phone_number = VALUES(phone_number), topics = VALUES(topics), enabled = VALUES(enabled)]], params)
+        routine_id = VALUES(routine_id), phone_number = VALUES(phone_number), topics = VALUES(topics), profile = VALUES(profile),
+        enabled = VALUES(enabled)]], params)
 end
 
 function DB.UpsertLocation(loc)
