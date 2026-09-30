@@ -100,7 +100,7 @@ local function snap(src, pos, mode, dest)
     end)
     local res = Citizen.Await(p)
     if type(res) == 'table' and tonumber(res.x) then
-        return vector3(res.x + 0.0, res.y + 0.0, res.z + 0.0), tonumber(res.h)
+        return vector3(res.x + 0.0, res.y + 0.0, res.z + 0.0), tonumber(res.h), res.vis == true
     end
     return nil
 end
@@ -239,6 +239,16 @@ function Spawner.BuildTask(r)
     if ov and ov.type == 'hostage' then
         return { kind = 'hostage', mode = ov.mode, target = ov.taker, veh = ov.veh, seat = ov.seat }
     end
+    -- v3: etkileşim animasyonu (el sıkışma, dans, yetişkin etkileşimleri...) konuşmanın ve eşlik etmenin önündedir
+    if r.interaction and SC.Interact then
+        return SC.Interact.BuildTask(r, r.interaction)
+    end
+    -- v3: araçtaki eşlikçi konuşurken de araçta kalır
+    local comp = ov and ov.type == 'companion' and ov or nil
+    local VEH_PHASES = { enter = true, ride = true, exit = true, driving = true, hold = true, wait_passenger = true, to_car = true, arrive = true }
+    if comp and SC.Companion and (VEH_PHASES[comp.phase or ''] or not r.convo) then
+        return SC.Companion.BuildTask(r, comp)
+    end
     if r.convo then
         return { kind = 'converse', target = r.convo.src }
     end
@@ -289,7 +299,19 @@ function Spawner.BuildTask(r)
     end
     if st.pointIndex and loc.points[st.pointIndex] then
         local p = loc.points[st.pointIndex]
-        return { kind = 'scenario', x = p.coords.x, y = p.coords.y, z = p.coords.z, h = p.coords.w, scenario = p.scenario or defaultScenario(st.activity) }
+        local spec = { kind = 'scenario', x = p.coords.x, y = p.coords.y, z = p.coords.z, h = p.coords.w, scenario = p.scenario or defaultScenario(st.activity) }
+        -- v3: nokta etiketine göre animasyon (ör. eğlence çalışanı 'pole' noktasında direk dansı)
+        local def = SC.Activities[st.activity]
+        if def and def.anims and (not def.adultAnims or (Config.AdultNPC and Config.AdultNPC.Enabled)) then
+            for _, tag in ipairs(p.tags or {}) do
+                local an = def.anims[tag]
+                if an then
+                    spec.anim = { dict = an[1], name = an[2] }
+                    break
+                end
+            end
+        end
+        return spec
     end
     return { kind = 'scenario', x = loc.door.x, y = loc.door.y, z = loc.door.z, h = loc.door.w, scenario = defaultScenario(st.activity) }
 end
@@ -305,6 +327,7 @@ function Spawner.UpdateTask(r)
     phys.taskSetAt = GetGameTimer()
     phys.traveling = (spec.kind == 'drive' or spec.kind == 'walk') and r.state.activity == 'commute'
     Entity(phys.ped).state:set('scTask', spec, true)
+    if SC.State then SC.State.Refresh(r, 'task') end
 end
 
 -- Tek seferlik hareket (el sallama, omuz silkme...) ve yüz ifadesi
@@ -354,18 +377,33 @@ end
 -- ---------------------------------------------------------------------
 -- Spawn / despawn
 -- ---------------------------------------------------------------------
+local spawnDefer = {}
+
 local function doSpawn(r, info, src)
     local pos, heading = info.pos, info.heading or 0.0
-    local veh
+    local veh, visible, sp, sh
     if info.kind == 'car' then
-        local sp, sh = snap(src, pos, 'road', r.state.toPos)
+        sp, sh, visible = snap(src, pos, 'road', r.state.toPos)
         if not sp then return end
         pos, heading = sp, sh or heading
     elseif info.kind == 'walk' or info.kind == 'pos' then
-        pos = snap(src, pos, 'ped') or pos
+        sp, sh, visible = snap(src, pos, 'ped')
+        pos = sp or pos
     else
-        pos = snap(src, pos, 'ground') or pos
+        sp, sh, visible = snap(src, pos, 'ground')
+        pos = sp or pos
     end
+    -- v3: oyuncunun gözü önünde (ekranda ve yakında) aniden belirmesin; birkaç tur ertelenir.
+    -- Kapıdan çıkış (emerge) doğal olduğu için ertelenmez.
+    local P = Config.Performance or {}
+    if visible and P.SpawnVisibilityCheck ~= false and not info.emerge then
+        local d = nearestPlayer(players, pos)
+        if d <= (P.SpawnDeferDistance or 90.0) and (spawnDefer[r.id] or 0) < (P.SpawnDeferMax or 3) then
+            spawnDefer[r.id] = (spawnDefer[r.id] or 0) + 1
+            return
+        end
+    end
+    spawnDefer[r.id] = nil
     -- await sırasında durum değişmiş olabilir
     local again = Sim.GetSpawnInfo(r)
     if not again or Spawner.peds[r.id] or not r.enabled then return end
@@ -425,6 +463,8 @@ function Spawner.Despawn(r, reason, keepVehicle)
     if not phys then return end
     if r.convo and SC.Convo then SC.Convo.End(r, 'despawn') end
     if SC.Hostage and SC.Hostage.Is(r) then SC.Hostage.End(r, 'despawn') end
+    if r.interaction and SC.Interact then SC.Interact.Stop(r, 'despawn') end
+    if SC.Companion and SC.NPC.Companion(r) then SC.Companion.End(r, 'despawn', { silent = true }) end
     -- takip / buluşma ped'e bağlıdır: ped silinirken sakin bulunduğu yerde serbest kalır
     if r.override and (r.override.type == 'follow' or r.override.type == 'meet' or r.override.type == 'chat') then
         Sim.ClearOverride(r, 'despawn')
@@ -451,7 +491,8 @@ local function farthestEvictable()
     local best, bestD = nil, -1
     for rid, phys in pairs(Spawner.peds) do
         local r = Sim.Residents[rid]
-        if r and not r.convo and not (r.override and (r.override.type == 'follow' or r.override.type == 'meet' or r.override.type == 'hostage')) then
+        if r and not r.convo and not r.interaction and not (r.override and (r.override.type == 'follow' or r.override.type == 'meet'
+            or r.override.type == 'hostage' or r.override.type == 'companion')) then
             if (phys.minDist or 0) > bestD then best, bestD = r, phys.minDist or 0 end
         end
     end
@@ -464,8 +505,9 @@ end
 function Spawner.Tick()
     local now = Clock.Now()
     players = collectPlayers()
-    local spawnR = Config.SpawnRadius or 150.0
-    local despawnR = spawnR + (Config.DespawnBuffer or 40.0)
+    local LOD = (Config.Performance and Config.Performance.LOD) or {}
+    local spawnR = LOD.FullRadius or Config.SpawnRadius or 150.0
+    local despawnR = math.max(spawnR + (Config.DespawnBuffer or 40.0), LOD.ReducedRadius or 0.0)
     local timer = GetGameTimer()
 
     -- 1) mevcut pedler
@@ -488,6 +530,12 @@ function Spawner.Tick()
             phys.coords = pc
             local minD = nearestPlayer(players, pc)
             phys.minDist = minD
+            -- v3 LOD: tam / azaltılmış simülasyon (istemci azaltılmışta görevi daha seyrek izler)
+            local lod = minD <= spawnR and 'full' or 'reduced'
+            if phys.lod ~= lod then
+                phys.lod = lod
+                Entity(phys.ped).state:set('scLod', lod, true)
+            end
             if not phys.deadAt and GetEntityHealth(phys.ped) <= 0 then
                 phys.deadAt = timer
                 if SC.World then SC.World.OnResidentDied(r, nil) end
@@ -497,7 +545,7 @@ function Spawner.Tick()
                 keep = (timer - phys.deadAt) < 20000
             elseif r.status ~= 'alive' then
                 keep = false
-            elseif minD > despawnR and not r.convo then
+            elseif minD > despawnR and not r.convo and not r.interaction and not (SC.NPC and SC.NPC.Companion(r)) then
                 keep = false
             elseif r.state.inside and phys.taskKind == 'enter' and (timer - (phys.taskSetAt or timer)) > 90000 then
                 keep = false
@@ -513,7 +561,8 @@ function Spawner.Tick()
     -- 2) spawn adayları
     local candidates = {}
     for _, r in ipairs(Sim.List) do
-        if r.enabled and not Spawner.peds[r.id] and not spawning[r.id] and not r.convo then
+        if r.enabled and not Spawner.peds[r.id] and not spawning[r.id] and not r.convo
+            and (not SC.Adult or SC.Adult.CanSpawn(r)) then
             local info = Sim.GetSpawnInfo(r, now)
             if info then
                 local d, src = nearestPlayer(players, info.pos)
@@ -589,6 +638,17 @@ RegisterNetEvent('samy-citizens:server:taskEvent', function(netId, seq, event, d
     end
     if seq ~= phys.seq then return end
 
+    -- v3: eşlikçi ve etkileşim görev olayları
+    if type(event) == 'string' then
+        if event:sub(1, 5) == 'comp_' then
+            if SC.Companion then SC.Companion.OnTaskEvent(r, event, type(data) == 'table' and data or {}) end
+            return
+        elseif event:sub(1, 4) == 'int_' then
+            if SC.Interact then SC.Interact.OnTaskEvent(r, event, type(data) == 'table' and data or {}) end
+            return
+        end
+    end
+
     local now = Clock.Now()
     if event == 'arrived' or event == 'parked' then
         if r.state.activity == 'commute' and r.state.mode ~= 'transit' and not r.convo and not r.override then
@@ -616,6 +676,30 @@ end)
 -- ---------------------------------------------------------------------
 -- Temizlik
 -- ---------------------------------------------------------------------
+-- Kaynak başlarken: önceki çalışmadan (çökme vb.) kalmış sakin ped/araçlarını sil (statebag işaretinden tanınır)
+function Spawner.StartupSweep()
+    local peds, vehs = 0, 0
+    for _, ped in ipairs(GetAllPeds()) do
+        if DoesEntityExist(ped) and not IsPedAPlayer(ped) and Entity(ped).state.scId and not Spawner.byNet[NetworkGetNetworkIdFromEntity(ped)] then
+            DeleteEntity(ped)
+            peds = peds + 1
+        end
+    end
+    for _, veh in ipairs(GetAllVehicles()) do
+        if DoesEntityExist(veh) and Entity(veh).state.scVeh and not vehicleHasPlayer(veh) then
+            local tracked = false
+            for _, rec in pairs(Spawner.vehicles) do
+                if rec.entity == veh then tracked = true end
+            end
+            if not tracked then
+                DeleteEntity(veh)
+                vehs = vehs + 1
+            end
+        end
+    end
+    if peds + vehs > 0 then print(('^3[samy-citizens] önceki çalışmadan kalan %d ped, %d araç temizlendi^7'):format(peds, vehs)) end
+end
+
 function Spawner.Shutdown()
     for _, phys in pairs(Spawner.peds) do
         if DoesEntityExist(phys.ped) then DeleteEntity(phys.ped) end

@@ -291,3 +291,133 @@ SCData.Residents = {
         acquaintances = { 'ismail_koc' },
     },
 }
+
+--[[
+    v3 PROFİLLERİ (kişilik puanları, sevdikleri/sevmedikleri, ilişki tercihleri, favori bölgeler, araç tercihi,
+    güne özel alternatifli rutin). İlk açılışta profile sütunu boş olan kayıtlara eklenir; sonrasında
+    /citizensadmin panelinden düzenlenir.
+      stats         : 0-100 (friendliness, humor, confidence, jealousy, patience, romantic, social, aggression)
+      romance       : { open = flörte açık mı, prefers = 'any' | 'male' | 'female' }
+      vehicle_pref  : 'car' | 'walk' | 'transit' (kendi arabası yoksa taksi/otobüs)
+      schedule      : { ['gün 1-7'] = { bloklar } } (anahtar metin olmalı: ['5'] = cuma)  -> o gün rutin şablonu yerine bu bloklar kullanılır
+                      blokta alt = { 'bar', 'restaurant', 'home' } ağırlıklı rastgele (ilk seçenek en olası)
+]]
+SCData.Profiles = {
+    elif_kaya = {
+        stats = { friendliness = 78, humor = 80, confidence = 70, jealousy = 45, patience = 30, romantic = 60, social = 85, aggression = 15 },
+        likes = { 'dans', 'taco', 'plaj', 'fotoğraf çekmek', 'pop müzik' },
+        dislikes = { 'kaba insanlar', 'erken kalkmak', 'yağmurlu günler' },
+        romance = { open = true, prefers = 'male' },
+        favorite_areas = { 'vespucci', 'del_perro', 'west_vinewood' },
+        vehicle_pref = 'transit',
+        schedule = {
+            ['7'] = {
+                { from = '11:00', to = '13:00', activity = 'home_idle', location = 'home' },
+                { from = '13:00', to = '17:00', alt = { { activity = 'leisure', location = 'vespucci_beach', weight = 3 }, { activity = 'coffee', location = 'fav:cafe', weight = 2 }, 'home' } },
+                { from = '17:00', to = '19:00', activity = 'home_idle', location = 'home' },
+                { from = '19:00', to = '24:30', alt = { 'bar', 'restaurant', 'home' } },
+                { from = '24:45', to = '11:00', activity = 'sleep', location = 'home' },
+            },
+        },
+    },
+    murat_demir = {
+        stats = { friendliness = 40, humor = 30, confidence = 70, jealousy = 25, patience = 45, romantic = 25, social = 30, aggression = 35 },
+        likes = { 'futbol', 'eski arabalar', 'balık tutmak', 'ızgara et' },
+        dislikes = { 'yalan', 'gürültülü müzik', 'kibirli insanlar' },
+        romance = { open = false, prefers = 'female' },
+        favorite_areas = { 'davis', 'strawberry' },
+        vehicle_pref = 'car',
+    },
+    can_yildiz = {
+        stats = { friendliness = 40, humor = 35, confidence = 65, jealousy = 40, patience = 60, romantic = 35, social = 25, aggression = 20 },
+        likes = { 'fitness', 'caz', 'düzen', 'iyi kahve' },
+        dislikes = { 'dağınıklık', 'gecikmek', 'yüksek sesle konuşan insanlar' },
+        romance = { open = true, prefers = 'female' },
+        favorite_areas = { 'rockford', 'pillbox' },
+        vehicle_pref = 'car',
+        schedule = {
+            ['5'] = {
+                { from = '06:30', to = '09:00', activity = 'home_idle', location = 'home' },
+                { from = '09:00', to = '13:00', activity = 'work', location = 'work' },
+                { from = '13:00', to = '14:00', activity = 'lunch', location = 'flex:lunch' },
+                { from = '14:00', to = '18:00', activity = 'work', location = 'work' },
+                { from = '18:00', to = '20:00', activity = 'exercise', location = 'muscle_beach' },
+                { from = '20:00', to = '23:30', alt = { 'bar', 'restaurant', 'home' } },
+                { from = '23:45', to = '06:30', activity = 'sleep', location = 'home' },
+            },
+        },
+    },
+    zeynep_arslan = {
+        stats = { friendliness = 70, humor = 45, confidence = 60, jealousy = 20, patience = 80, romantic = 45, social = 45, aggression = 10 },
+        likes = { 'kitaplar', 'yoga', 'bitkiler', 'sessiz sabahlar' },
+        dislikes = { 'gece gürültüsü', 'kaba hastalar', 'fast food' },
+        romance = { open = true, prefers = 'any' },
+        favorite_areas = { 'pillbox' },
+        vehicle_pref = 'transit',
+    },
+    hasan_celik = {
+        stats = { friendliness = 80, humor = 75, confidence = 70, jealousy = 30, patience = 60, romantic = 30, social = 90, aggression = 15 },
+        likes = { 'tavla', 'eski şarkılar', 'sohbet', 'demli çay' },
+        dislikes = { 'trafik', 'acele eden müşteriler', 'bahşiş vermeyenler' },
+        romance = { open = false, prefers = 'female' },
+        favorite_areas = { 'davis', 'downtown_vinewood' },
+        vehicle_pref = 'car',
+    },
+    deniz_sahin = {
+        stats = { friendliness = 75, humor = 60, confidence = 55, jealousy = 35, patience = 40, romantic = 55, social = 70, aggression = 25 },
+        likes = { 'podcast', 'kaykay', 'sokak fotoğrafçılığı', 'kahve' },
+        dislikes = { 'haksızlık', 'sabah dersleri', 'yalancılar' },
+        romance = { open = true, prefers = 'any' },
+        favorite_areas = { 'vespucci', 'morningwood' },
+        vehicle_pref = 'walk',
+        schedule = {
+            ['6'] = {
+                { from = '11:00', to = '13:00', activity = 'home_idle', location = 'home' },
+                { from = '13:00', to = '17:00', alt = { { activity = 'leisure', location = 'vespucci_beach', weight = 3 }, { activity = 'coffee', location = 'bean_machine', weight = 2 }, { activity = 'exercise', location = 'muscle_beach', weight = 1 } } },
+                { from = '17:00', to = '19:30', activity = 'home_idle', location = 'home' },
+                { from = '19:30', to = '25:30', alt = { 'bar', 'beach', 'home' } },
+                { from = '25:45', to = '11:00', activity = 'sleep', location = 'home' },
+            },
+        },
+    },
+    ismail_koc = {
+        stats = { friendliness = 75, humor = 40, confidence = 60, jealousy = 15, patience = 70, romantic = 20, social = 60, aggression = 10 },
+        likes = { 'satranç', 'güvercinler', 'tarih', 'gazete okumak' },
+        dislikes = { 'kaba gençler', 'yüksek sesle müzik', 'akıllı telefonlar' },
+        romance = { open = false, prefers = 'female' },
+        favorite_areas = { 'pillbox' },
+        vehicle_pref = 'walk',
+    },
+    ali_ozturk = {
+        stats = { friendliness = 55, humor = 30, confidence = 45, jealousy = 20, patience = 85, romantic = 40, social = 25, aggression = 10 },
+        likes = { 'balık tutmak', 'gün batımı', 'deniz', 'eski radyo programları' },
+        dislikes = { 'kalabalık', 'yüksek ses', 'fırtınalı hava' },
+        romance = { open = true, prefers = 'female' },
+        favorite_areas = { 'vespucci', 'del_perro' },
+        vehicle_pref = 'car',
+    },
+    selin_aksoy = {
+        stats = { friendliness = 55, humor = 70, confidence = 85, jealousy = 55, patience = 45, romantic = 50, social = 70, aggression = 30 },
+        likes = { 'kokteyller', 'DJ\'lik', 'motosiklet', 'gece hayatı' },
+        dislikes = { 'sarhoş tacizciler', 'sabahlar', 'sıkıcı insanlar' },
+        romance = { open = true, prefers = 'any' },
+        favorite_areas = { 'west_vinewood', 'del_perro' },
+        vehicle_pref = 'car',
+    },
+    emre_gunes = {
+        stats = { friendliness = 80, humor = 55, confidence = 40, jealousy = 35, patience = 35, romantic = 65, social = 70, aggression = 10 },
+        likes = { 'video oyunları', 'basketbol', 'motor videoları', 'hamburger' },
+        dislikes = { 'geç kalmak', 'yokuşlar', 'bozuk yollar' },
+        romance = { open = true, prefers = 'female' },
+        favorite_areas = { 'downtown_vinewood', 'vespucci' },
+        vehicle_pref = 'car',
+    },
+}
+
+for _, r in ipairs(SCData.Residents) do
+    if not r.profile and SCData.Profiles[r.id] then
+        local p = SCData.Profiles[r.id]
+        p.type = p.type or 'citizen'
+        r.profile = p
+    end
+end

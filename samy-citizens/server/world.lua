@@ -69,6 +69,8 @@ end
 function World.Flee(r, fromPos, targetSrc, seconds, shakenMinutes)
     if r.override and r.override.type == 'hostage' then return end
     if r.convo then SC.Convo.End(r, 'flee') end
+    if r.interaction and SC.Interact then SC.Interact.Stop(r, 'threat') end
+    if SC.NPC and SC.NPC.Companion(r) then SC.Companion.End(r, 'flee', { silent = true }) end
     Sim.SetOverride(r, {
         type = 'flee', from = Utils.VecToTable(fromPos), target = targetSrc,
         untilMs = GetGameTimer() + (seconds or Config.World.FleeSeconds or 25) * 1000,
@@ -195,6 +197,7 @@ end
 
 function World.OnGunshot(src, pos)
     if throttled('shot|' .. src, 3) then return end
+    if SC.Aware then SC.Aware.RecordIncident('gunshot', pos) end
     local cid = SC.Bridge.GetCitizenId(src)
     CreateThread(function()
         local now = os.time()
@@ -238,6 +241,10 @@ function World.OnHit(r, src, byVehicle)
         return
     end
     if r.convo then SC.Convo.End(r, 'threat') end
+    if SC.Aware and not byVehicle then SC.Aware.RecordIncident('fight', ppos) end
+    -- saldırı/çarpma: süren eşlik ve etkileşim biter
+    if r.interaction and SC.Interact then SC.Interact.Stop(r, 'threat') end
+    if SC.NPC and SC.NPC.Companion(r) then SC.Companion.End(r, 'flee', { silent = true }) end
     SC.Convo.Bubble(r, SC.Actions.PickLine(byVehicle and 'scream_hit_vehicle' or 'scream_assault'), 'npc', 4000)
     World.Flee(r, ppos, src)
     if cid then
@@ -341,6 +348,7 @@ AddEventHandler('explosionEvent', function(sender, ev)
     if type(ev) ~= 'table' or not ev.posX then return end
     local pos = vector3(ev.posX + 0.0, ev.posY + 0.0, ev.posZ + 0.0)
     local radius = Config.World.ExplosionRadius or 90.0
+    if SC.Aware then SC.Aware.RecordIncident('explosion', pos) end
     local now = os.time()
     for _, r in ipairs(Sim.List) do
         if r.enabled and r.status == 'alive' then

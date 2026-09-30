@@ -103,6 +103,8 @@ local function residentRow(r)
         override = r.override and r.override.type or nil,
         pos = pos and { x = pos.x, y = pos.y, z = pos.z } or nil,
         phone = r.phone_number,
+        state = SC.State and SC.State.Get(r) or nil,
+        npcType = SC.NPC and SC.NPC.Type(r) or 'citizen',
     }
 end
 
@@ -150,6 +152,11 @@ register('bootstrap', function(src)
         },
         generateEnabled = true,
         locale = Config.Locale,
+        npcTypes = (function()
+            local out = {}
+            for k, v in pairs(Config.NPCTypes or {}) do out[k] = v.label or k end
+            return out
+        end)(),
     }
 end)
 
@@ -163,7 +170,8 @@ register('resident', function(src, id)
             citizenid = rel.citizenid, name = rel.char_name or '?', stage = rel.stage, stageLabel = SC.Rel.StageLabel(rel.stage),
             familiarity = rel.familiarity, affinity = rel.affinity, trust = rel.trust, timesMet = rel.times_met,
             meetDays = rel.meet_days, lastSeen = rel.last_seen > 0 and Utils.RelativeAge(os.time() - rel.last_seen) or '-',
-            phoneKnown = rel.phone_known,
+            phoneKnown = rel.phone_known, xp = rel.xp or 0, romance = rel.romance or 'none',
+            romanceLabel = (rel.romance and rel.romance ~= 'none') and SC.Rel.StageLabel(rel.romance) or '-',
         }
     end
     local appts = {}
@@ -176,6 +184,7 @@ register('resident', function(src, id)
             voice_id = r.voice_id, personality = r.personality, backstory = r.backstory, job = r.job, homeId = r.homeId,
             vehicle = r.vehicle, favorite_places = r.favorite_places, acquaintances = r.acquaintances, routine_id = r.routine_id,
             phone_number = r.phone_number, enabled = r.enabled, hasAppearance = r.appearance ~= nil, topics = r.topics or {},
+            profile = r.profile or {}, derivedStats = SC.Persona and SC.Persona.Stats(r) or nil,
         },
         row = residentRow(r),
         plan = Sim.GetPlanView(r, Clock.Day(), false),
@@ -191,6 +200,37 @@ end)
 -- Sakin kaydetme
 -- ---------------------------------------------------------------------
 local TOPIC_KEYS = { 'job', 'work_opinion', 'family', 'dream', 'secret', 'food', 'music', 'origin' }
+local STAT_KEYS = { 'friendliness', 'humor', 'confidence', 'jealousy', 'patience', 'romantic', 'social', 'aggression' }
+local VEH_PREFS = { car = true, walk = true, transit = true }
+
+-- v3 profili: kişilik puanları, kategori, sevdikleri/sevmedikleri, ilişki tercihleri (rutin alternatifleri korunur)
+local function validateProfile(p, age)
+    if type(p) ~= 'table' then return nil end
+    local out = {}
+    out.type = (type(p.type) == 'string' and Config.NPCTypes[p.type]) and p.type or 'citizen'
+    local minAge = (Config.AdultNPC and Config.AdultNPC.MinAge) or 21
+    out.adult = p.adult == true and (tonumber(age) or 0) >= minAge
+    out.zone = str(p.zone, 40, '^[%w_]+$')
+    if type(p.stats) == 'table' then
+        local st = {}
+        local any = false
+        for _, k in ipairs(STAT_KEYS) do
+            local n = tonumber(p.stats[k])
+            if n then
+                st[k] = Utils.Clamp(math.floor(n), 0, 100)
+                any = true
+            end
+        end
+        if any then out.stats = st end
+    end
+    out.likes = strList(p.likes, 10, 40)
+    out.dislikes = strList(p.dislikes, 10, 40)
+    local rom = type(p.romance) == 'table' and p.romance or {}
+    out.romance = { open = rom.open ~= false, prefers = (rom.prefers == 'male' or rom.prefers == 'female') and rom.prefers or 'any' }
+    out.favorite_areas = strList(p.favorite_areas, 8, 40)
+    out.vehicle_pref = VEH_PREFS[p.vehicle_pref] and p.vehicle_pref or nil
+    return out
+end
 
 local function validateResident(d)
     if type(d) ~= 'table' then return nil, 'data' end
@@ -263,6 +303,7 @@ local function validateResident(d)
     if not out.routine_id or not Sim.Routines[out.routine_id] then return nil, 'routine' end
     out.phone_number = str(d.phone_number, 15, '^%d+$')
     out.enabled = d.enabled ~= false
+    out.profile = validateProfile(d.profile, out.age)
     return out
 end
 
@@ -284,6 +325,10 @@ register('saveResident', function(src, d)
     if r and not d.resetAppearance and r.model == data.model then
         data.appearance = r.appearance
     end
+    -- profil panelden gelmediyse mevcut korunur; güne özel rutin (schedule) panelde düzenlenmez, korunur
+    local old = r and type(r.profile) == 'table' and r.profile or nil
+    data.profile = data.profile or old or { type = 'citizen' }
+    if old and old.schedule and not data.profile.schedule then data.profile.schedule = old.schedule end
     SC.DB.UpsertResident(data)
     if r then
         local respawn = r.model ~= data.model or Utils.JsonEncode(r.vehicle) ~= Utils.JsonEncode(data.vehicle) or d.resetAppearance
@@ -292,6 +337,7 @@ register('saveResident', function(src, d)
         if not data.voice_id then r.voice_id = nil end
         r.appearance = data.appearance
         r.plans = {}
+        if SC.Persona then SC.Persona.Invalidate(r) end
         if r.vehicle then
             r.car = r.car or { locationId = r.homeId }
         else
@@ -624,12 +670,26 @@ end)
 
 register('debugInfo', function(src)
     local out = {}
+    local cid = src ~= 0 and SC.Bridge.GetCitizenId(src) or nil
+    local ppos = src ~= 0 and SC.NPC.PlayerCoords(src) or nil
     for rid, phys in pairs(SC.Spawner.peds) do
         local r = Sim.Residents[rid]
-        if r then
+        -- sadece yakındaki NPC'ler için ayrıntı (ağ yükü)
+        if r and (not ppos or not phys.coords or Utils.Dist(ppos, phys.coords) < 80.0) then
+            local rel = cid and SC.Rel.Peek(r.id, cid) or nil
+            local comp = SC.NPC.Companion(r)
+            local data = SC.NPC.Data(r, cid) or {}
+            local ctx = cid and SC.Context.Peek(r.id, cid) or nil
+            local veh = data.currentVehicle
             out[tostring(phys.netId)] = {
                 id = r.id, name = r.firstname .. ' ' .. r.lastname, activity = r.state.activity,
                 task = phys.taskKind, convo = r.convo ~= nil, override = r.override and r.override.type or nil,
+                state = data.state, mood = data.mood, lod = phys.lod,
+                relationship = rel and SC.Rel.StageLabel(SC.RelXP.DisplayStage(rel)) or '-', xp = rel and rel.xp or 0,
+                destination = data.destination or '-', vehicle = veh and ('#' .. tostring(veh)) or '-',
+                current = comp and ('Companion:' .. tostring(comp.phase)) or (r.interaction and ('Anim:' .. r.interaction.id)) or L('act.' .. tostring(r.state.activity)),
+                lastIntent = (ctx and ctx.lastIntent) or r.lastIntent or '-',
+                schedule = data.schedule and (data.schedule.from .. '-' .. data.schedule.to .. ' ' .. L('actn.' .. tostring(data.schedule.activity))) or '-',
             }
         end
     end

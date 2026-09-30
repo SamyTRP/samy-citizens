@@ -42,6 +42,12 @@ local function groundZ(x, y, z)
     return z
 end
 
+-- Diğer istemci modülleri (eşlikçi, etkileşim animasyonları) için
+Tasks.Report = report
+Tasks.PedFromServerId = pedFromServerId
+Tasks.LoadDict = loadDict
+Tasks.GroundZ = groundZ
+
 -- ---------------------------------------------------------------------
 -- Ped kurulumu & görünüm
 -- ---------------------------------------------------------------------
@@ -91,6 +97,18 @@ end
 -- Görev uygulayıcıları
 -- ---------------------------------------------------------------------
 local function startScenario(ped, spec)
+    -- v3: noktaya özel animasyon (ör. direk dansı): noktaya hizalanıp döngüde oynatılır
+    if type(spec.anim) == 'table' and spec.anim.dict and spec.anim.name then
+        local z = groundZ(spec.x, spec.y, spec.z)
+        ClearPedTasks(ped)
+        SetEntityHeading(ped, (spec.h or 0.0) + 0.0)
+        CreateThread(function()
+            if loadDict(spec.anim.dict) then
+                TaskPlayAnimAdvanced(ped, spec.anim.dict, spec.anim.name, spec.x + 0.0, spec.y + 0.0, z - 1.0, 0.0, 0.0, (spec.h or 0.0) + 0.0, 4.0, -4.0, -1, 1, 0.0, 0, 0)
+            end
+        end)
+        return
+    end
     local scen = spec.scenario or 'WORLD_HUMAN_STAND_IMPATIENT'
     local seated = scen:find('SEAT', 1, true) ~= nil or scen:find('BENCH', 1, true) ~= nil
     local z = groundZ(spec.x, spec.y, spec.z)
@@ -220,6 +238,9 @@ function Tasks.Apply(ped, netId, spec, a)
     -- rehinelikten çıktı: bağı çöz, eller-yukarı animasyonunu bırak
     if IsEntityAttachedToAnyPed(ped) then DetachEntity(ped, true, false) end
     ClearPedSecondaryTask(ped)
+    -- v3: beraber gezme ve etkileşim animasyonları ayrı modüllerde
+    if kind == 'companion' then return SC.CompanionC.Apply(ped, netId, spec, a) end
+    if kind == 'interact' then return SC.AnimC.ApplyNpc(ped, netId, spec, a) end
     if kind == 'scenario' or (kind == 'idle' and spec.x) then
         local target = vector3(spec.x, spec.y, spec.z)
         if IsPedInAnyVehicle(ped, false) then
@@ -308,6 +329,8 @@ end
 
 function Tasks.Monitor(ped, netId, spec, a, now)
     local kind = spec.kind
+    if kind == 'companion' then return SC.CompanionC.Monitor(ped, netId, spec, a, now) end
+    if kind == 'interact' then return SC.AnimC.MonitorNpc(ped, netId, spec, a, now) end
     local pc = GetEntityCoords(ped)
 
     -- genel takılma takibi (hareket gerektiren aşamalarda)
@@ -338,8 +361,10 @@ function Tasks.Monitor(ped, netId, spec, a, now)
             end
         elseif a.phase == 'doing' and now >= (a.checkAt or 0) then
             a.checkAt = now + 5000
-            -- birisi itip senaryodan çıkardıysa geri dön
-            if not IsPedActiveInScenario(ped) and not IsPedRagdoll(ped) then
+            -- birisi itip senaryodan çıkardıysa geri dön (animasyonlu noktada animasyon kontrol edilir)
+            local busy = IsPedActiveInScenario(ped)
+            if type(spec.anim) == 'table' and spec.anim.dict then busy = IsEntityPlayingAnim(ped, spec.anim.dict, spec.anim.name, 3) end
+            if not busy and not IsPedRagdoll(ped) then
                 if dist2d(pc, target) > 2.0 then
                     navTo(ped, spec.x, spec.y, spec.z, 1.0, spec.h)
                     a.phase = 'moving'
@@ -555,11 +580,16 @@ function Tasks.Process(ped, netId, now)
     local spec = es.scTask
     if type(spec) ~= 'table' then return end
     if not a or a.seq ~= spec.seq then
+        -- önceki görev etkileşim animasyonuysa temizle (yeni görev araç içinde bir şey yapmasa bile)
+        if a and a.kind == 'interact' and SC.AnimC then SC.AnimC.CleanupNpc(ped, a) end
         local pc = GetEntityCoords(ped)
         a = { seq = spec.seq, kind = spec.kind, phase = 'start', startedAt = now, lastPos = pc, lastMoveAt = now, retries = 0, animSeq = a and a.animSeq or 0 }
         applied[netId] = a
         Tasks.Apply(ped, netId, spec, a)
     else
+        -- v3 LOD: hiçbir oyuncuya yakın değilse (azaltılmış simülasyon) görev daha seyrek izlenir
+        if es.scLod == 'reduced' and now - (a.monitorAt or 0) < ((Config.Performance and Config.Performance.ReducedMonitorMs) or 3000) then return end
+        a.monitorAt = now
         Tasks.Monitor(ped, netId, spec, a, now)
     end
     local anim = es.scAnim

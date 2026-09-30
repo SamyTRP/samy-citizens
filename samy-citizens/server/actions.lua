@@ -53,13 +53,63 @@ handlers.cancel_appointment = function(ctx, a, out)
     if ok then out.ui[#out.ui + 1] = { type = 'appointment', text = L('ui_appt_cancelled') } end
 end
 
+-- Eski "eşlik et" aksiyonu artık beraber gezme (companion) sistemine yönlenir
 handlers.follow_player = function(ctx, a, out)
     if ctx.channel ~= 'talk' then return end
-    if not SC.StageAtLeast(ctx.rel.stage, Config.Actions.MinStage.follow_player) then return end
-    local minutes = Utils.Clamp(math.floor(tonumber(a.minutes) or 3), 1, Config.Actions.FollowMaxMinutes or 5)
-    out.follow = minutes
+    out.companion = { mode = 'follow' }
     out.endConversation = true
-    out.ui[#out.ui + 1] = { type = 'follow', text = L('ui_follow', ctx.r.firstname, minutes) }
+end
+
+-- ---------------------------------------------------------------------
+-- v3: beraber gezme / araç / bir yere gitme / etkileşim / flört
+-- Karar diyalog işleyicisinde verildi; burada sadece kanala göre sonuç işaretlenir,
+-- asıl doğrulama SC.Companion / SC.Interact içinde (mesafe, durum önceliği, koltuk...) yapılır.
+-- ---------------------------------------------------------------------
+handlers.companion_start = function(ctx, a, out)
+    if ctx.channel ~= 'talk' then return end
+    out.companion = { mode = 'follow' }
+    out.endConversation = true
+end
+
+handlers.companion_resume = function(ctx, a, out)
+    if ctx.channel ~= 'talk' then return end
+    out.companionResume = true
+    out.endConversation = true
+end
+
+handlers.companion_stop = function(ctx, a, out)
+    if ctx.channel ~= 'talk' then return end
+    out.companionStop = a.wait and 'wait' or 'leave'
+    out.endConversation = true
+end
+
+handlers.invite_vehicle = function(ctx, a, out)
+    if ctx.channel ~= 'talk' then return end
+    local net = math.floor(tonumber(a.veh) or 0)
+    if net <= 0 then return end
+    out.invite = { veh = net }
+    out.endConversation = true
+end
+
+handlers.go_to = function(ctx, a, out)
+    if ctx.channel ~= 'talk' then return end
+    if type(a.location) ~= 'string' and type(a.waypoint) ~= 'table' then return end
+    out.goTo = { location = a.location, waypoint = a.waypoint }
+    out.endConversation = true
+end
+
+handlers.interact = function(ctx, a, out)
+    if ctx.channel ~= 'talk' or type(a.id) ~= 'string' then return end
+    out.interact = a.id
+end
+
+handlers.set_romance = function(ctx, a, out)
+    if a.value ~= 'dating' and a.value ~= 'partner' then return end
+    -- son bir kontrol: karar aynı turda sunucuda verildi, yine de temel şartlar
+    local minAge = (Config.Relationship.Romance and Config.Relationship.Romance.MinAge) or 21
+    if (ctx.r.age or 0) < minAge or ctx.rel.stage == 'enemy' or ctx.rel.stage == 'cold' then return end
+    SC.RelXP.SetRomance(ctx.r, ctx.rel, a.value)
+    out.ui[#out.ui + 1] = { type = 'romance', text = L('ui_romance_' .. a.value, ctx.r.firstname) }
 end
 
 handlers.give_directions = function(ctx, a, out)

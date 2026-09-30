@@ -1,13 +1,17 @@
 --[[
-    Yerleşik mini mesajlaşma (Config.Phone.Provider = 'builtin')
-    gksphone kullanılıyorsa bu dosya hiçbir şey yapmaz; tüm SMS akışı gksphone üzerinden gider.
+    Yerleşik mini mesajlaşma
+    Sunucu, seçilen telefon sağlayıcısını GlobalState.scPhoneProvider'a yazar (bridge/phone.lua).
+    Yerleşik ekran sadece sağlayıcı 'builtin' ise ya da tek yönlü bir sağlayıcıda (qb-phone) cevap için açılır;
+    gksphone / lb-phone / npwd kullanılıyorsa tüm SMS akışı o telefondan geçer.
 ]]
-if Config.Phone.Provider ~= 'builtin' then return end
-
 local open = false
 
 local function openPhone()
     if open then return end
+    if not GlobalState.scPhoneBuiltin then
+        lib.notify({ title = L('notify_title'), description = L('phone_use_own', tostring(GlobalState.scPhoneProvider or '?')), type = 'inform' })
+        return
+    end
     local contacts = lib.callback.await('samy-citizens:phone:contacts', false)
     open = true
     SendNUIMessage({ action = 'phone:open', contacts = contacts or {} })

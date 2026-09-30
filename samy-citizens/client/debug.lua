@@ -1,6 +1,8 @@
 --[[
     /citizensdebug — her sakinin üstünde id + ad + aktivite + görev + ağ sahibi
-    Sadece açıkken kare bazlı çizim yapar.
+    v3: + State (durum makinesi), Mood, LOD, Relationship/XP (seninle), LastIntent, Destination, Vehicle,
+        CurrentActivity, Schedule. Aynı bilgiler Config.Debug = true iken sunucu konsoluna da yazılır.
+    Sadece açıkken kare bazlı çizim yapar; kapalıyken hiçbir debug thread'i çalışmaz.
 ]]
 local Utils = SC.Utils
 local enabled = false
@@ -59,7 +61,14 @@ RegisterNetEvent('samy-citizens:client:toggleDebug', function()
                             e.rid, Utils.Ascii(d.name or ''), d.activity or '?', task and task.kind or '?',
                             d.convo and ' ~g~[konusma]~w~' or (d.override and (' [' .. d.override .. ']') or ''),
                             ownerSid, owner == PlayerId() and ' ~g~(sen)' or '')
-                        drawText3D(pc.x, pc.y, pc.z + 1.15, text)
+                        -- v3: durum makinesi, ruh hâli, ilişki, hedef, araç, son niyet, program
+                        if d.state then
+                            text = text .. ('~n~~b~State:~w~ %s  ~b~Mood:~w~ %s  ~b~LOD:~w~ %s~n~~b~Rel:~w~ %s (%s XP)  ~b~Intent:~w~ %s~n~~b~Dest:~w~ %s  ~b~Veh:~w~ %s~n~~b~Now:~w~ %s~n~~b~Sched:~w~ %s'):format(
+                                d.state, d.mood or '-', d.lod or '-', Utils.Ascii(d.relationship or '-'), tostring(d.xp or 0),
+                                d.lastIntent or '-', Utils.Ascii(d.destination or '-'), d.vehicle or '-',
+                                Utils.Ascii(d.current or '-'), Utils.Ascii(d.schedule or '-'))
+                        end
+                        drawText3D(pc.x, pc.y, pc.z + 1.35, text)
                     end
                 end
             end

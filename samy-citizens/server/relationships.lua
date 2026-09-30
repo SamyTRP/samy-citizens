@@ -20,6 +20,7 @@ local function defaultRow(npcId, cid)
         phone_known = false, player_phone = nil, name_known = false, npc_name_shown = false, nickname = nil, facts = {},
         daily_date = nil, daily_affinity = 0, daily_trust = 0, daily_familiarity = 0, daily_gifts = 0,
         proactive_date = nil, proactive_count = 0, last_decay_day = nil,
+        xp = 0, romance = 'none', first_met = 0, last_contact = 0, daily_xp = 0, stats = {},
         isNew = true,
     }
 end
@@ -43,6 +44,15 @@ local function normalize(row)
     row.daily_familiarity = tonumber(row.daily_familiarity) or 0
     row.daily_gifts = tonumber(row.daily_gifts) or 0
     row.proactive_count = tonumber(row.proactive_count) or 0
+    row.xp = tonumber(row.xp) or 0
+    row.daily_xp = tonumber(row.daily_xp) or 0
+    row.first_met = tonumber(row.first_met) or 0
+    row.last_contact = tonumber(row.last_contact) or 0
+    if row.romance ~= 'dating' and row.romance ~= 'partner' then row.romance = 'none' end
+    if type(row.stats) ~= 'table' then
+        local st = Utils.JsonDecode(row.stats)
+        row.stats = type(st) == 'table' and st or {}
+    end
     for _, f in ipairs({ 'char_name', 'last_meet_day', 'player_phone', 'nickname', 'daily_date', 'proactive_date', 'last_decay_day' }) do
         if row[f] == '' then row[f] = nil end
     end
@@ -67,10 +77,18 @@ function Rel.ComputeStage(r)
             end
         end
     end
+    -- v3: ilişki XP'si ('hybrid' = ikisinden yüksek olan, 'xp' = sadece XP)
+    local mode = Config.Relationship.Mode or 'classic'
+    if mode ~= 'classic' and SC.RelXP and SC.RelXP.Enabled() then
+        local xs = SC.RelXP.LevelId(tonumber(r.xp) or 0)
+        if mode == 'xp' or (SC.StageOrder[xs] or 0) > (SC.StageOrder[st] or 0) then st = xs end
+    end
     return st
 end
 
 function Rel.StageLabel(stage)
+    local lbl = Config.Relationship.Labels and Config.Relationship.Labels[stage or 'stranger']
+    if lbl and lbl ~= '' then return lbl end
     return L('stage_' .. (stage or 'stranger'))
 end
 
@@ -90,8 +108,11 @@ local function ensureDaily(row)
         row.daily_trust = 0
         row.daily_familiarity = 0
         row.daily_gifts = 0
+        row.daily_xp = 0
     end
 end
+Rel.EnsureDaily = ensureDaily
+Rel.RefreshStage = function(row) return refreshStage(row) end
 
 -- Uzun süre görüşülmeyince familiarity azalır (tembel hesap)
 -- last_decay_day: son azaltmanın uygulandığı unix zamanı (metin olarak saklanır)
@@ -190,6 +211,7 @@ function Rel.ApplyDelta(row, dAff, dTrust, opts)
     row.trust = Utils.Clamp(row.trust + dTrust, 0, 100)
     Rel.MarkDirty(row)
     local changed, old = refreshStage(row)
+    if SC.RelXP and dAff < 0 then SC.RelXP.OnDelta(row) end
     return changed, old, dAff, dTrust
 end
 
@@ -218,6 +240,7 @@ function Rel.OnMeet(row, charName)
     end
     row.char_name = charName or row.char_name
     row.times_met = row.times_met + 1
+    if (row.first_met or 0) <= 0 then row.first_met = os.time() end
     local dayKey = SC.Clock.RelationshipDayKey()
     if row.last_meet_day ~= dayKey then
         row.last_meet_day = dayKey
@@ -251,21 +274,25 @@ function Rel.Flush(sync)
                 query = [[INSERT INTO samy_citizens_relationships
                     (npc_id, citizenid, char_name, familiarity, affinity, trust, stage, last_seen, times_met, meet_days, last_meet_day,
                      phone_known, player_phone, name_known, npc_name_shown, nickname, daily_date, daily_affinity, daily_trust, daily_familiarity, daily_gifts,
-                     proactive_date, proactive_count, last_decay_day, facts)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     proactive_date, proactive_count, last_decay_day, facts, xp, romance, first_met, last_contact, daily_xp, stats)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON DUPLICATE KEY UPDATE char_name = VALUES(char_name), familiarity = VALUES(familiarity), affinity = VALUES(affinity),
                     trust = VALUES(trust), stage = VALUES(stage), last_seen = VALUES(last_seen), times_met = VALUES(times_met),
                     meet_days = VALUES(meet_days), last_meet_day = VALUES(last_meet_day), phone_known = VALUES(phone_known),
                     player_phone = VALUES(player_phone), name_known = VALUES(name_known), npc_name_shown = VALUES(npc_name_shown), nickname = VALUES(nickname),
                     daily_date = VALUES(daily_date), daily_affinity = VALUES(daily_affinity), daily_trust = VALUES(daily_trust),
                     daily_familiarity = VALUES(daily_familiarity), daily_gifts = VALUES(daily_gifts), proactive_date = VALUES(proactive_date),
-                    proactive_count = VALUES(proactive_count), last_decay_day = VALUES(last_decay_day), facts = VALUES(facts)]],
+                    proactive_count = VALUES(proactive_count), last_decay_day = VALUES(last_decay_day), facts = VALUES(facts),
+                    xp = VALUES(xp), romance = VALUES(romance), first_met = VALUES(first_met), last_contact = VALUES(last_contact),
+                    daily_xp = VALUES(daily_xp), stats = VALUES(stats)]],
                 values = {
                     row.npc_id, row.citizenid, s(row.char_name), row.familiarity, row.affinity, row.trust, row.stage,
                     row.last_seen, row.times_met, row.meet_days, s(row.last_meet_day),
                     row.phone_known and 1 or 0, s(row.player_phone), row.name_known and 1 or 0, row.npc_name_shown and 1 or 0, s(row.nickname),
                     s(row.daily_date), row.daily_affinity, row.daily_trust, row.daily_familiarity, row.daily_gifts,
                     s(row.proactive_date), row.proactive_count, s(row.last_decay_day), json.encode(row.facts or {}),
+                    math.floor(tonumber(row.xp) or 0), row.romance or 'none', math.floor(tonumber(row.first_met) or 0),
+                    math.floor(tonumber(row.last_contact) or 0), math.floor(tonumber(row.daily_xp) or 0), json.encode(row.stats or {}),
                 },
             }
         end
@@ -300,6 +327,22 @@ function Rel.ListForCitizen(cid)
     return rows
 end
 
+-- Numarası bilinen ve en az belirli aşamadaki ilişkiler (akıllı proaktif mesaj için; thread içinden)
+function Rel.WithPhone(npcId)
+    local rows = MySQL.query.await([[SELECT * FROM samy_citizens_relationships WHERE npc_id = ? AND phone_known = 1]], { npcId }) or {}
+    local out = {}
+    for _, row in ipairs(rows) do
+        local k = key(row.npc_id, row.citizenid)
+        if not cache[k] then
+            local r = normalize(row)
+            r.cachedAt = os.time()
+            cache[k] = r
+        end
+        out[#out + 1] = cache[k]
+    end
+    return out
+end
+
 -- Yakın arkadaşlar (proaktif SMS için)
 function Rel.CloseFriendsWithPhone(npcId)
     Rel.Flush(true)
@@ -328,6 +371,8 @@ function Rel.Set(npcId, cid, fields)
     end
     if fields.phone_known ~= nil then row.phone_known = fields.phone_known == true end
     if fields.nickname ~= nil then row.nickname = fields.nickname ~= '' and fields.nickname or nil end
+    if fields.xp ~= nil then row.xp = Utils.Clamp(math.floor(tonumber(fields.xp) or row.xp or 0), 0, (Config.Relationship.XP and Config.Relationship.XP.MaxXP) or 5000) end
+    if fields.romance ~= nil then row.romance = (fields.romance == 'dating' or fields.romance == 'partner') and fields.romance or 'none' end
     row.familiarity = Utils.Clamp(row.familiarity, 0, 100)
     row.affinity = Utils.Clamp(row.affinity, -100, 100)
     row.trust = Utils.Clamp(row.trust, 0, 100)
@@ -338,9 +383,21 @@ end
 
 -- Oyuncu için hafif özet (NUI)
 function Rel.PublicView(row)
+    local display = SC.RelXP and SC.RelXP.DisplayStage(row) or row.stage
+    local xp = tonumber(row.xp) or 0
+    local nextMin
+    for _, lv in ipairs((Config.Relationship.XP and Config.Relationship.XP.Levels) or {}) do
+        if (lv.min or 0) > xp then nextMin = lv.min break end
+    end
+    if not nextMin and row.romance == 'none' and Config.Relationship.XP then nextMin = Config.Relationship.XP.DatingXP end
     return {
         stage = row.stage,
         stageLabel = Rel.StageLabel(row.stage),
+        display = display,
+        displayLabel = Rel.StageLabel(display),
+        romance = row.romance or 'none',
+        xp = xp,
+        nextXp = nextMin,
         familiarity = row.familiarity,
         affinity = row.affinity,
         trust = row.trust,
