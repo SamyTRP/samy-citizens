@@ -6,5 +6,8 @@
         "repo": "thedotmack/claude-mem"
       }
     }
+  },
+  "enabledPlugins": {
+    "claude-mem@thedotmack": true
   }
 }
